@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Secrets and local configuration
+.env
+*.p12
+*.mobileprovision
