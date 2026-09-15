@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "_comment": "مسارات Firmware جهاز ZLT M90 Plus. عدّل هذا الملف فقط عند ربط جهاز حقيقي. التقط الطلبات من لوحة إدارة الجهاز في المتصفح ثم انسخ المسارات وأسماء الحقول هنا. لا تضع كلمات مرور أو رموز جلسة في هذا الملف.",
+  "requestTimeoutSeconds": 12,
+  "connectTimeoutSeconds": 8,
+  "encoding": "json",
+  "probe": {
+    "url": "http://connectivitycheck.gstatic.com/generate_204",
+    "expectedStatus": 204
+  },
+  "routes": {
+    "login": {
+      "path": "/cgi-bin/luci/api/xqsystem/login",
+      "method": "POST",
+      "body": {
+        "username": "{username}",
+        "password": "{password}"
+      },
+      "successIndicators": ["token", "stok", "success", "ok"],
+      "failureIndicators": ["error", "invalid", "denied", "forbidden"]
+    },
+    "deviceInfo": {
+      "path": "/cgi-bin/luci/api/xqsystem/router_info",
+      "method": "GET"
+    },
+    "battery": {
+      "path": "/cgi-bin/luci/api/xqsystem/battery_status",
+      "method": "GET"
+    },
+    "network": {
+      "path": "/cgi-bin/luci/api/xqsystem/network_status",
+      "method": "GET"
+    },
+    "dataUsage": {
+      "path": "/cgi-bin/luci/api/xqsystem/data_usage",
+      "method": "GET"
+    },
+    "connectedDevices": {
+      "path": "/cgi-bin/luci/api/xqsystem/device_list",
+      "method": "GET"
+    },
+    "updateWifi": {
+      "path": "/cgi-bin/luci/api/xqsystem/set_wifi",
+      "method": "POST",
+      "body": {
+        "ssid": "{ssid}",
+        "password": "{password}"
+      }
+    },
+    "restartRouter": {
+      "path": "/cgi-bin/luci/api/xqsystem/reboot",
+      "method": "POST"
+    }
+  },
+  "fields": {
+    "batteryPercent": ["battery_percent", "batteryLevel", "battery_percentage", "battery", "power_percent", "charge", "percent"],
+    "batteryCharging": ["charging", "is_charging", "charge_status", "charging_status", "battery_status"],
+    "batteryRemainingMinutes": ["battery_remaining_minutes", "remaining_time", "battery_remain_time", "time_remaining"],
+    "batteryVoltage": ["voltage", "battery_voltage", "vbatt"],
+    "batteryTemperature": ["temperature", "battery_temperature", "temp"],
+
+    "carrierName": ["operator", "operator_name", "carrier", "isp", "network_operator", "spn"],
+    "networkType": ["network_type", "net_type", "rat", "access_technology", "wan_type"],
+    "signalPercent": ["signal_percent", "signal", "signal_strength", "rsrp_percent", "csq"],
+    "signalDbm": ["rssi", "rsrp", "dbm", "signal_dbm"],
+    "signalLevel": ["signal_level", "level", "bars"],
+    "localIp": ["local_ip", "lan_ip", "ip", "ip_address"],
+    "uptimeMinutes": ["uptime_minutes", "uptime", "connection_duration", "conn_time"],
+    "internetConnected": ["internet", "internet_connected", "wan_connected", "connected", "network_status"],
+    "cellularRegistered": ["cellular_registered", "registered", "sim_status", "sim_state", "card_status"],
+
+    "planTotalBytes": ["total_bytes", "data_total", "plan_total", "quota_total", "total_traffic"],
+    "planUsedBytes": ["used_bytes", "data_used", "plan_used", "quota_used", "used_traffic"],
+    "planRenewal": ["renewal_date", "expire_time", "expiry_date", "next_reset", "renewal"],
+
+    "deviceList": ["device_list", "devices", "clients", "client_list", "hosts", "stations"],
+    "deviceHostname": ["hostname", "name", "host_name", "device_name", "alias"],
+    "deviceMac": ["mac", "mac_address", "macaddr", "hwaddr"],
+    "deviceIp": ["ip", "ip_address", "ipaddr", "addr"],
+    "deviceType": ["type", "connection_type", "iface", "band"],
+
+    "deviceModel": ["model", "device_model", "product", "board"],
+    "firmwareVersion": ["firmware", "firmware_version", "version", "fwver", "rom_version"],
+    "hardwareVersion": ["hardware", "hardware_version", "hwver"],
+    "imei": ["imei", "imei_number"],
+    "serialNumber": ["sn", "serial", "serial_number"],
+    "wifiSsid": ["ssid", "wifi_ssid", "wl_ssid"],
+    "wanIp": ["wan_ip", "wan_ip_address", "public_ip", "external_ip"]
+  },
+  "genericAliases": {
+    "true": ["1", "true", "yes", "on", "connected", "registered", "charging"],
+    "false": ["0", "false", "no", "off", "disconnected", "unregistered", "not_charging"]
+  }
+}

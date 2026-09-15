@@ -1,0 +1,22 @@
+{
+  "_comment": "قوالب واجهة المستخدم المحلية. لا تضع كلمات مرور أو رموز جلسة هنا.",
+  "supported": {
+    "ar": true,
+    "rtl": true,
+    "lightDark": true,
+    "dynamicType": true,
+    "voiceOverContentDescriptions": true
+  },
+  "features": {
+    "batteryPercent": "firmware",
+    "batteryChargingState": "firmware",
+    "batteryRemainingTime": "firmware-or-estimated",
+    "networkStatus": "firmware",
+    "carrierName": "firmware-or-carrier-api",
+    "signalStrength": "firmware",
+    "dataPlan": "firmware-or-carrier-api-or-manual",
+    "connectedDevices": "firmware",
+    "updateWifi": "confirmed-only",
+    "restartRouter": "confirmed-only"
+  }
+}

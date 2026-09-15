@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Schematic stand-in for the ZLT M90 Plus product picture.
+
+  This is deliberately a generic pocket-router silhouette, not a photograph and not a render of
+  another vendor's device. Replace it by dropping a licensed photo at
+  app/src/main/assets/zlt_m90_plus_device.png; the DeviceImage component picks that up
+  automatically and the "صورة مؤقتة" label disappears.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="240dp"
+    android:height="300dp"
+    android:viewportWidth="240"
+    android:viewportHeight="300">
+
+    <!-- Device body -->
+    <path
+        android:fillColor="#DDE5E7"
+        android:strokeColor="#5A6A6D"
+        android:strokeWidth="3"
+        android:pathData="M46,18 L194,18 A16,16 0 0 1 210,34 L210,266 A16,16 0 0 1 194,282 L46,282 A16,16 0 0 1 30,266 L30,34 A16,16 0 0 1 46,18 Z" />
+
+    <!-- Inner screen area -->
+    <path
+        android:fillColor="#F5F9FA"
+        android:strokeColor="#9AA9AC"
+        android:strokeWidth="2"
+        android:pathData="M52,44 L188,44 A8,8 0 0 1 196,52 L196,196 A8,8 0 0 1 188,204 L52,204 A8,8 0 0 1 44,196 L44,52 A8,8 0 0 1 52,44 Z" />
+
+    <!-- Signal bars -->
+    <path android:fillColor="#00695C" android:pathData="M64,176 L64,156 L76,156 L76,176 Z" />
+    <path android:fillColor="#00695C" android:pathData="M84,176 L84,144 L96,144 L96,176 Z" />
+    <path android:fillColor="#4DB6AC" android:pathData="M104,176 L104,132 L116,132 L116,176 Z" />
+    <path android:fillColor="#B2DFDB" android:pathData="M124,176 L124,120 L136,120 L136,176 Z" />
+
+    <!-- Battery indicator -->
+    <path
+        android:fillColor="#2E7D32"
+        android:pathData="M156,148 L184,148 L184,176 L156,176 Z" />
+    <path
+        android:fillColor="#90A4AE"
+        android:pathData="M156,140 L184,140 L184,148 L156,148 Z" />
+
+    <!-- Status LED row -->
+    <path android:fillColor="#00695C" android:pathData="M72,222 m-7,0 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0" />
+    <path android:fillColor="#EF6C00" android:pathData="M104,222 m-7,0 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0" />
+    <path android:fillColor="#90A4AE" android:pathData="M136,222 m-7,0 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0" />
+    <path android:fillColor="#90A4AE" android:pathData="M168,222 m-7,0 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0" />
+
+    <!-- Antenna / vent detail -->
+    <path android:strokeColor="#9AA9AC" android:strokeWidth="3" android:pathData="M84,250 L156,250" />
+    <path android:strokeColor="#C4D0D2" android:strokeWidth="3" android:pathData="M92,262 L148,262" />
+</vector>

@@ -8,3 +8,16 @@ xcuserdata/
 .env
 *.p12
 *.mobileprovision
+
+# Android build output and local tooling state
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+*.apk
+*.aab
+*.keystore
+*.jks

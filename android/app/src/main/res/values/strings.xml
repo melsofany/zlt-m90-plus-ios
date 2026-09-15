@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ZLT M90 Plus</string>
+    <!-- Explains why the app needs local network access. Arabic, user-facing. -->
+    <string name="local_network_usage_description">يحتاج التطبيق إلى الاتصال بالشبكة المحلية للوصول إلى واجهة جهاز ZLT M90 Plus وعرض حالة البطارية والاتصال والأجهزة المتصلة.</string>
+</resources>
