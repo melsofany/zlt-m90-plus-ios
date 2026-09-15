@@ -1,8 +1,21 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
+
+/**
+ * Release signing is read from `keystore.properties`, which is intentionally not in version
+ * control. Without it the release build falls back to the debug key so that `assembleRelease`
+ * still runs locally and in CI.
+ */
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
 
 android {
     namespace = "com.zltm90plus.app"
@@ -18,6 +31,17 @@ android {
         vectorDrawables { useSupportLibrary = true }
     }
 
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
@@ -26,7 +50,11 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
@@ -37,6 +65,19 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+
+    lint {
+        // Fail the build only on real errors, not on style suggestions.
+        warningsAsErrors = false
+        abortOnError = true
+        // The placeholder device image is intentionally larger than a normal icon, and
+        // mipmap-anydpi-v26 is kept because that folder name is what Android expects.
+        disable += setOf("VectorRaster", "IconLauncherShape", "ObsoleteSdkInt", "UnusedResources")
+        // Chasing the newest AGP/dependency versions on every build is not useful here.
+        disable += setOf("GradleDependency", "NewerVersionAvailable")
+        textReport = true
+        htmlReport = true
     }
 
     testOptions {

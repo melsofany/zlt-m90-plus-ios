@@ -3,6 +3,8 @@ package com.zltm90plus.app.util
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
+import android.os.Build
 
 /**
  * Answers "is the phone on a Wi-Fi network that could be the router?" without performing any
@@ -11,38 +13,53 @@ import android.net.NetworkCapabilities
  */
 object LocalNetworkChecker {
 
-    data class WifiInfo(
+    data class WifiStatus(
         val connectedToWifi: Boolean,
         val networkName: String?,
         val localIpv4: String?,
     )
 
-    fun current(context: Context): WifiInfo {
+    fun current(context: Context): WifiStatus {
         val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            ?: return WifiInfo(false, null, null)
-        val network = manager.activeNetwork ?: return WifiInfo(false, null, null)
-        val capabilities = manager.getNetworkCapabilities(network) ?: return WifiInfo(false, null, null)
+            ?: return WifiStatus(false, null, null)
+        val network = manager.activeNetwork ?: return WifiStatus(false, null, null)
+        val capabilities = manager.getNetworkCapabilities(network) ?: return WifiStatus(false, null, null)
 
         val onWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-        val linkProperties = manager.getLinkProperties(network)
-        val localIp = linkProperties?.linkAddresses
-            ?.firstOrNull { it.address is java.net.Inet4Address && !it.address.isLoopbackAddress && !it.address.isLinkLocalAddress }
+        val localIp = manager.getLinkProperties(network)?.linkAddresses
+            ?.firstOrNull {
+                it.address is java.net.Inet4Address &&
+                    !it.address.isLoopbackAddress &&
+                    !it.address.isLinkLocalAddress
+            }
             ?.address
             ?.hostAddress
 
-        val ssid = if (onWifi) {
-            @Suppress("DEPRECATION")
-            runCatching {
-                manager.activeNetwork?.let { active ->
-                    (manager.getNetworkCapabilities(active)
-                        ?.transportInfo as? android.net.wifi.WifiInfo)?.ssid
-                }
-            }.getOrNull()?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
-        } else {
-            null
-        }
+        return WifiStatus(onWifi, ssid(context, manager, network, onWifi), localIp)
+    }
 
-        return WifiInfo(onWifi, ssid, localIp)
+    /**
+     * `NetworkCapabilities.transportInfo` only exists from API 29, so older devices still have to
+     * read the SSID from `WifiManager`. Both paths need `ACCESS_FINE_LOCATION` to return a real
+     * name; without it Android hands back an obfuscated value, which is treated as unknown.
+     */
+    private fun ssid(
+        context: Context,
+        manager: ConnectivityManager,
+        network: android.net.Network,
+        onWifi: Boolean,
+    ): String? {
+        if (!onWifi) return null
+        val raw = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            (manager.getNetworkCapabilities(network)?.transportInfo as? android.net.wifi.WifiInfo)?.ssid
+        } else {
+            @Suppress("DEPRECATION")
+            (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)
+                ?.connectionInfo
+                ?.ssid
+        }
+        // Without location permission Android returns a redacted name; treat it as unknown.
+        return raw?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
     }
 
     /** True when the given router host shares a /24 with the phone, i.e. plausibly reachable. */

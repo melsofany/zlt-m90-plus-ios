@@ -12,12 +12,16 @@ JDK 21 and Android SDK 34 are required. Gradle wrapper is checked in.
 ```bash
 cd android
 ./gradlew assembleDebug      # debug APK
-./gradlew assembleRelease    # release APK (currently signed with the debug key)
-./gradlew testDebugUnitTest  # 49 unit + Robolectric tests
+./gradlew assembleRelease    # release APK (falls back to the debug key)
+./gradlew testDebugUnitTest  # 54 unit + Robolectric tests
+./gradlew lintDebug          # must stay at 0 errors
 ```
 
 APKs land in `android/app/build/outputs/apk/{debug,release}/`.
 If `ANDROID_HOME` is unset, create `android/local.properties` with `sdk.dir=/path/to/android-sdk`.
+
+Release signing is picked up automatically from `android/keystore.properties` (gitignored; see
+`keystore.properties.example`). No properties file means the debug key is used.
 
 ## Architecture
 
@@ -41,3 +45,9 @@ Strict layering: `ui/screens` (Compose) → `ui/MainViewModel` (state) → `data
 - Robolectric Compose tests render a small viewport, so call `performScrollTo()` before `assertIsDisplayed()` on anything below the fold.
 - Text like `البطارية` appears both as a card title and as a bottom-bar tab; select tabs with `onNode(hasText(...) and isSelectable())`.
 - `org.json` is a real test dependency (not the Android stub) so parser tests run on the JVM.
+- `VisualSnapshotTest` runs with `GraphicsMode.NATIVE` and captures pixels. Robolectric has no real
+  window, so it uses `createAndroidComposeRule<ComponentActivity>()` and draws `android.R.id.content`
+  into a bitmap by hand; `captureToImage()` would hang here. Variants (theme, direction, font scale)
+  are driven by `mutableStateOf` because `setContent` may only be called once per test.
+- There is no emulator in this environment (no `/dev/kvm`), so instrumented tests are not run; the
+  Robolectric screenshots are the visual regression net.

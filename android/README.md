@@ -44,7 +44,10 @@ cd android
 # نسخة الإصدار
 ./gradlew assembleRelease
 
-# جميع اختبارات الوحدة (49 اختبارًا)
+# فحص Lint
+./gradlew lintDebug
+
+# جميع الاختبارات (54 اختبارًا، منها اختبارات رسم بصرية)
 ./gradlew testDebugUnitTest
 ```
 
@@ -61,11 +64,37 @@ app/build/outputs/apk/debug/app-debug.apk
 app/build/outputs/apk/release/app-release.apk
 ```
 
-نسخة `release` موقّعة بمفتاح debug حاليًا حتى يتم إدخال مفتاح إصدار حقيقي (راجع `app/build.gradle.kts`). للتثبيت على هاتف متصل بالـ USB:
+### صور الشاشات الناتجة عن الاختبارات
+
+اختبارات `VisualSnapshotTest` ترسم الشاشات فعليًا وتكتب صور PNG في:
+
+```
+app/build/reports/screenshots/
+```
+
+وتشمل: `dashboard-light.png`، `dashboard-dark.png`، `connect-rtl.png`، `connect-ltr.png`، ولقطات لشاشة صغيرة `320×480dp` وشاشة كبيرة `480×1000dp`.
+
+### توقيع نسخة الإصدار
+
+نسخة `release` موقّعة بمفتاح debug افتراضيًا حتى يتم إدخال مفتاح إصدار حقيقي. لتفعيل التوقيع الحقيقي:
+
+```bash
+cp android/keystore.properties.example android/keystore.properties
+# ثم املأ المسار وكلمات المرور، وأنشئ المفتاح إن لم يكن موجودًا:
+keytool -genkeypair -v -keystore zlt-release.jks -alias zlt -keyalg RSA -keysize 2048 -validity 10000
+```
+
+`keystore.properties` وملفات `.jks` مستثناة من Git.
+
+للتثبيت على هاتف متصل بالـ USB:
 
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+### التكامل المستمر
+
+`.github/workflows/android.yml` يشغّل الاختبارات وLint ويبني النسختين، ويرفع الـ APK والصور الناتجة كـ Artifacts.
 
 ---
 
@@ -183,6 +212,7 @@ app/src/main/assets/router_routes.json
 - `ModelDefaultsTest` / `SignalMappingTest` — القيم الافتراضية وتخطيط الإشارة.
 - `MockRouterApiTest` — جميع السيناريوهات.
 - `ScreenRenderTest` — يعرض الواجهات فعليًا عبر Robolectric ويتحقق من النصوص العربية، ومن قاعدة «غير متاحة» عند غياب البيانات، ومن العمل بالوضع الداكن واتجاه RTL.
+- `VisualSnapshotTest` — يرسم الشاشات بمحرك Robolectric الرسومي الأصلي ويحلّل البكسلات الناتجة: يتحقق من ظهور المحتوى فعلًا في الوضعين الفاتح والداكن، ومن أن الاتجاه RTL يغيّر التخطيط فعلًا، ومن أن النص يكبر مع `fontScale`، ومن سلامة التخطيط على شاشة `320×480dp` وشاشة `480×1000dp`. ويحفظ الصور في `app/build/reports/screenshots/`.
 
 ```bash
 ./gradlew testDebugUnitTest
@@ -193,6 +223,7 @@ app/src/main/assets/router_routes.json
 لم يُشغَّل التطبيق على جهاز ZLT M90 Plus فعلي ولا على محاكي بواجهة رسومية في هذه البيئة (لا يوجد `/dev/kvm`، والمحاكي غير متاح). لذلك:
 
 - المسارات في `router_routes.json` تحتاج تحققًا ضد Firmware الجهاز الفعلي.
-- يلزم اختبار بصري على شاشة صغيرة وكبيرة، وتكبير خط النظام، وTalkBack.
+- اختبار TalkBack وقارئ الشاشة، والسلوك على شاشات الطي، يبقى مطلوبًا يدويًا.
+- الصور الناتجة عن `VisualSnapshotTest` تغطي الوضعين وأحجام الشاشات، لكنها ليست بديلًا عن تشغيل حقيقي.
 
 **لا يُعتبر هذا التطبيق جاهزًا للإنتاج قبل اختباره على جهاز ZLT M90 Plus حقيقي وبإصدارات Firmware مختلفة.**

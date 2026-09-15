@@ -134,8 +134,8 @@ fun InfoRow(
 @Composable
 fun UnavailableNotice(
     featureName: String,
-    detail: String? = null,
     modifier: Modifier = Modifier,
+    detail: String? = null,
 ) {
     val colors = statusColors()
     Row(
