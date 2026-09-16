@@ -7,6 +7,12 @@
 #
 # Run detached so it outlives the shell that starts it:
 #   setsid nohup ./serve-keepalive.sh > /dev/null 2>&1 < /dev/null &
+#
+# This keeps the server up for as long as the container lives. It cannot survive the container
+# itself being replaced: there is no cron, no systemd, and no supervisor in this image, and PID 1
+# is the agent server, so no process and no startup hook outlives a recycle. When the link stops
+# answering, the container was almost certainly replaced — restart from the session that owns the
+# new one. The APK itself is never lost; only the process serving it.
 
 set -u
 
