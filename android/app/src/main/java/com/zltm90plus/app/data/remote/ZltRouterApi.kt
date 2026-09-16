@@ -429,8 +429,12 @@ class ZltRouterApi(
                 "isTest" to "false",
                 "goformId" to goform.loginGoformId,
                 (endpoint?.userField ?: goform.loginUserField) to username.ifBlank { goform.username },
+                // The encoding is the configured one, always. Reading it from the login page made a
+                // correct password look wrong: the page mentions `base64` for other reasons, and
+                // that flipped the encoding to plain text, which this firmware rejects with its
+                // wrong-password code. The encoding is a property of the firmware, not of the page.
                 (endpoint?.passwordField ?: goform.loginPasswordField) to
-                    encodePassword(password, if (endpoint?.passwordBase64 == false) "plain" else goform.loginPasswordEncoding),
+                    encodePassword(password, goform.loginPasswordEncoding),
             ),
             scheme = scheme,
         )
@@ -815,9 +819,10 @@ class ZltRouterApi(
     private fun discoverLoginEndpoint(scheme: String): RouterLoginPage.Endpoint? {
         val base = baseFor(scheme)
         val html = fetchText(base, "/") ?: return null
-        // Recorded whatever the parse concludes, because the two failures — a page that names the
-        // endpoint and one that does not — are indistinguishable from the outside and lead to
-        // different fixes.
+
+        // Kept in full. It is small, it is the only place the field names the page states can be
+        // seen, and it tells the two failures apart: a page that names the endpoint and one that
+        // does not look identical from the outside.
         Diagnostics.recordProbe(
             url = RouterUrl.build(base, "/").toString(),
             reachable = true,
@@ -839,25 +844,28 @@ class ZltRouterApi(
         for (script in RouterLoginPage.scriptSources(html)) {
             val source = fetchText(base, script) ?: continue
             val found = RouterLoginPage.endpointsInBundle(source)
+            val path = found.firstOrNull()
             // The bundle is megabytes of minified framework, so the log gets what matters — the
             // paths found, and a bounded excerpt to show how they are written — rather than a file
-            // nobody can read.
+            // nobody can read. The note carries the conclusion, which is the line to read first.
             Diagnostics.recordProbe(
                 url = RouterUrl.build(base, script).toString(),
                 reachable = true,
-                detail = if (found.isEmpty()) {
-                    "لا يوجد مسار في هذا الملف (${source.length} حرفًا)"
-                } else {
-                    "المسارات: ${found.joinToString(", ")}"
-                },
+                detail = null,
                 durationMillis = 0,
                 page = source.take(EXCERPT_LIMIT),
+                note = if (path == null) {
+                    "لا مسار في هذا الملف (${source.length} حرفًا)"
+                } else {
+                    "المسار من ملف الجهاز: $path"
+                },
             )
-            val endpoint = found.firstOrNull()?.let { path ->
-                RouterLoginPage.parse(source, defaults)?.copy(path = path)
-                    ?: defaults.let { RouterLoginPage.Endpoint(path, it.userField, it.passwordField, false) }
-            }
-            if (endpoint != null) return endpoint
+            if (path == null) continue
+            // Only the path is taken from the script. Field names are deliberately not read here: a
+            // minified bundle is full of strings that merely look like field names, and a wrong one
+            // turns a correct password into a rejected login. The configured names are the
+            // known-good values for this firmware, so they stay unless the page states otherwise.
+            return RouterLoginPage.Endpoint(path, defaults.userField, defaults.passwordField)
         }
         return null
     }

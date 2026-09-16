@@ -22,13 +22,11 @@ object RouterLoginPage {
      * @param path the endpoint the login form posts to.
      * @param userField name of the username field in that form.
      * @param passwordField name of the password field.
-     * @param passwordBase64 true when the page encodes the password before sending it.
      */
     data class Endpoint(
         val path: String,
         val userField: String,
         val passwordField: String,
-        val passwordBase64: Boolean,
     )
 
     /** Matches `goform_set_cmd_process` however the page quotes or names it. */
@@ -120,6 +118,8 @@ object RouterLoginPage {
             path = path,
             userField = when {
                 fieldPattern("username").containsMatchIn(html) -> "username"
+                // `user` must be tried last: `username` also matches the `user` pattern, so the
+                // order is what keeps a `username` field from being read as `user`.
                 fieldPattern("user").containsMatchIn(html) -> "user"
                 else -> defaults.userField
             },
@@ -128,9 +128,6 @@ object RouterLoginPage {
                 fieldPattern("password").containsMatchIn(html) -> "password"
                 else -> defaults.passwordField
             },
-            // This firmware base64-encodes the password before posting it; a page that mentions
-            // base64 is doing the same thing.
-            passwordBase64 = html.contains("base64", ignoreCase = true),
         )
     }
 }

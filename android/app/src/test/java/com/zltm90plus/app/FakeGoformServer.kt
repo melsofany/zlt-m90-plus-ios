@@ -21,7 +21,14 @@ import kotlin.concurrent.thread
  * token, reads are `cmd`-driven, and a read without the session cookie is refused.
  */
 class FakeGoformServer(
-    private val password: String = "admin",
+    val password: String = "admin",
+    /**
+     * Accept a clear-text password as well as a Base64 one.
+     *
+     * Only for the test that configures plain encoding. The default is strict, because a lenient
+     * fake accepts a wrongly-encoded password and lets a green test hide a real bug.
+     */
+    private val acceptsPlainPassword: Boolean = false,
     /** Firmware fields this build does not implement; they come back absent. */
     private val unsupportedFields: Set<String> = emptySet(),
 ) {
@@ -105,6 +112,16 @@ class FakeGoformServer(
     var appBundleBody: String =
         """var api={base:"/cgi-bin/goform/goform_set_cmd_process",read:"/cgi-bin/goform/goform_get_cmd_process"};"""
 
+    /**
+     * A bundle that mentions `base64` for unrelated reasons, as the real one does.
+     *
+     * The real page has `<script>…base64…</script>` and the real bundle runs a `Base64` polyfill, so
+     * a client that inferred the password encoding from the text saw `base64` twice and flipped the
+     * firmware's base64 login to plain text — which the device answers with its wrong-password code.
+     */
+    @Volatile
+    var appBundleMentionsBase64Unrelatedly: Boolean = false
+
     /** The framework bundle, deliberately huge and free of endpoints, as the real one is. */
     @Volatile
     var vendorBundleBody: String = "/* vue */ var framework='" + "x".repeat(200_000) + "';"
@@ -137,7 +154,14 @@ class FakeGoformServer(
             </head><body><div id="app"><div id="first-loading-body"></div></div>
             <script src="$vendorBundlePath"></script>
             <script src="$appBundlePath"></script></body></html>
-            """.trimIndent()
+            """.trimIndent() +
+                // The real shell ends with a script containing `base64`, which is what a page-based
+                // encoding guess would latch onto.
+                if (appBundleMentionsBase64Unrelatedly) {
+                    "<script>var polyfill=Base64;</script>"
+                } else {
+                    ""
+                }
         }
 
     /** The exact page this server serves, so a test can check the parse against the real bytes. */
@@ -229,13 +253,21 @@ class FakeGoformServer(
         return when (form["goformId"]) {
             "LOGIN" -> {
                 loginAttempts.incrementAndGet()
-                // The firmware wants the password Base64-encoded in this field; a clear-text
-                // password is rejected exactly like a wrong one, so decoding it here is what makes
-                // the test able to tell "wrong password" from "wrong encoding".
+                // The firmware wants the password Base64-encoded in this field, and it does not fall back:
+                // a clear-text password is rejected exactly like a wrong one. Decoding strictly is
+                // what makes the test able to tell "wrong password" from "wrong encoding" — an
+                // earlier version fell back to the raw value, which accepted plain text and hid a
+                // real encoding bug behind a green test.
                 val presented = form["password"].orEmpty()
-                val decoded = runCatching {
-                    String(java.util.Base64.getDecoder().decode(presented), Charsets.UTF_8)
-                }.getOrDefault(presented)
+                val decoded = if (acceptsPlainPassword) {
+                    runCatching {
+                        String(java.util.Base64.getDecoder().decode(presented), Charsets.UTF_8)
+                    }.getOrDefault(presented)
+                } else {
+                    runCatching {
+                        String(java.util.Base64.getDecoder().decode(presented), Charsets.UTF_8)
+                    }.getOrNull()
+                }
                 if (form["user"] == "admin" && decoded == password) {
                     // A real Set-Cookie header carries attributes, which is exactly what the old
                     // client forwarded verbatim as a request Cookie header.

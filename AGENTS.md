@@ -56,6 +56,17 @@ Strict layering: `ui/screens` (Compose) → `ui/MainViewModel` (state) → `data
 3. No `Log`/`println` anywhere in main sources — no passwords, session tokens, or data-plan figures in Logcat.
 4. Everything is Arabic and RTL (`android:supportsRtl="true"`); never rely on colour alone — pair it with an icon and text.
 5. Impactful actions (Wi-Fi change, reboot) require a confirmation dialog and are disabled in demo mode.
+6. **Never infer a protocol detail from page text.** The login page and its JavaScript bundle both
+   mention `base64` for unrelated reasons (a polyfill, a helper). Reading the password encoding out of
+   that flipped this firmware's base64 login to clear text, and the device answers a mis-encoded
+   password with its wrong-password code — so a correct password was reported as wrong. Endpoint
+   *paths* may be read from the device's own files because they are unique and verifiable; field
+   names, encodings, and command IDs come from `router_routes.json`, never from scraping a minified
+   bundle.
+7. A test double must be as strict as the device. `FakeGoformServer` rejects a clear-text password
+   because the firmware does; a lenient fake that falls back to the raw value turns a real encoding
+   bug into a green test. When adding a regression test, reintroduce the bug and confirm the test
+   fails before trusting it.
 
 ## Router protocol notes
 

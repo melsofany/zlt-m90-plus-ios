@@ -96,10 +96,21 @@ class ZltRouterApiTest {
 
     @Test
     fun `a config that asks for a plain password is honoured`() = runTest {
-        val plainConfig = configWith(loginPasswordEncoding = "plain")
-        val api = ZltRouterApi(plainConfig, session, hostProvider = { "${server.host}:${server.port}" })
-        api.login("admin", "admin")
-        assertEquals("admin", server.lastSetBody.single().parseFormValue("password"))
+        // A fake of its own that accepts clear text, since the shared one is deliberately strict:
+        // against the strict fake this test would only prove that a plain password is refused.
+        val plainServer = FakeGoformServer(acceptsPlainPassword = true).start()
+        try {
+            val plainConfig = configWith(loginPasswordEncoding = "plain")
+            val api = ZltRouterApi(
+                plainConfig,
+                session,
+                hostProvider = { "${plainServer.host}:${plainServer.port}" },
+            )
+            api.login("admin", "admin")
+            assertEquals("admin", plainServer.lastSetBody.single().parseFormValue("password"))
+        } finally {
+            plainServer.stop()
+        }
     }
 
     @Test
@@ -265,6 +276,39 @@ class ZltRouterApiTest {
 
         assertNotNull("login must fail rather than succeed against a guessed path", error)
     }
+    /**
+     * The user's diagnosis, reproduced: a correct password must not read as wrong.
+     *
+     * The real page and its bundle both mention `base64` for unrelated reasons (a polyfill, a
+     * helper). A previous build inferred the password encoding from that text and flipped this
+     * firmware's base64 login to plain text — which the device answers with its wrong-password
+     * code, so a correct password was reported as wrong. The fake decodes the field, so it can tell
+     * "wrong password" from "wrong encoding", and this test fails if the encoding is inferred again.
+     */
+    @Test
+    fun `a correct password is not rejected when the page mentions base64`() = runTest {
+        server.servesSinglePageShell = true
+        server.appBundleMentionsBase64Unrelatedly = true
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+
+        val error = runCatching { api().login("admin", server.password) }.exceptionOrNull()
+
+        assertEquals("the password is correct and must be accepted", null, error)
+    }
+
+    /** The same, with the password taken from the page rather than the bundle. */
+    @Test
+    fun `a correct password is accepted when the page names the endpoint`() = runTest {
+        server.servesSinglePageShell = false
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+
+        val error = runCatching { api().login("admin", server.password) }.exceptionOrNull()
+
+        assertEquals("the password is correct and must be accepted", null, error)
+    }
+
     @Test
     fun `login falls back to http when the preferred https scheme has no interface`() = runTest {
         // The fake answers the API over http; asking it to serve https is what the 404 stands in

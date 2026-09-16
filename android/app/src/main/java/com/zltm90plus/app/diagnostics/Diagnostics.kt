@@ -32,6 +32,14 @@ data class DiagnosticExchange(
      * only way to tell that apart from a page that was read wrongly.
      */
     val pageSource: String? = null,
+    /**
+     * A conclusion drawn from the exchange, shown whatever else it says.
+     *
+     * Distinct from [error], which is only set when the request failed. A discovery that succeeded
+     * still has something to report — which path it took from the device's own files — and without
+     * a field of its own that fact had nowhere to go and was silently dropped.
+     */
+    val note: String? = null,
 )
 
 /**
@@ -72,6 +80,7 @@ object Diagnostics {
         detail: String?,
         durationMillis: Long,
         page: String? = null,
+        note: String? = null,
     ) {
         record(
             DiagnosticExchange(
@@ -84,6 +93,7 @@ object Diagnostics {
                 error = if (reachable) null else (detail ?: "لا استجابة"),
                 durationMillis = durationMillis,
                 pageSource = page,
+                note = note,
             ),
         )
     }

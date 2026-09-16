@@ -15,10 +15,13 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -32,9 +35,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.zltm90plus.app.ui.ConnectionPhase
@@ -58,6 +64,9 @@ fun ConnectScreen(
     onOpenDiagnostics: () -> Unit,
 ) {
     var showTechnical by remember { mutableStateOf(false) }
+    // Reset on every screen entry: a revealed password must not persist beyond the moment it was
+    // asked for, so leaving the screen and coming back starts hidden again.
+    var passwordVisible by remember { mutableStateOf(false) }
     val colors = statusColors()
 
     Scaffold { padding ->
@@ -121,16 +130,44 @@ fun ConnectScreen(
                     onValueChange = onPasswordChange,
                     label = { Text("كلمة المرور") },
                     singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
+                    // Revealed only while the toggle is on, so a mistyped password can be checked
+                    // before it is rejected. The toggle carries an icon and a state, because the
+                    // project never relies on colour alone to say something.
+                    visualTransformation = if (passwordVisible) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Password,
                         imeAction = ImeAction.Done,
                     ),
+                    trailingIcon = {
+                        IconButton(
+                            onClick = { passwordVisible = !passwordVisible },
+                            modifier = Modifier.semantics {
+                                contentDescription = if (passwordVisible) {
+                                    "إخفاء كلمة المرور"
+                                } else {
+                                    "إظهار كلمة المرور"
+                                }
+                            },
+                        ) {
+                            Icon(
+                                imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = null,
+                            )
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "تُحفظ كلمة المرور في التخزين الآمن للجهاز فقط، ولا تُرسل إلى أي خادم خارجي.",
+                    text = if (passwordVisible) {
+                        "كلمة المرور ظاهرة الآن على الشاشة. أخفِها بعد التأكد منها."
+                    } else {
+                        "تُحفظ كلمة المرور في التخزين الآمن للجهاز فقط، ولا تُرسل إلى أي خادم خارجي."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

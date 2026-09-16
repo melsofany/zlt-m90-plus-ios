@@ -7,6 +7,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isSelectable
@@ -27,6 +28,7 @@ import com.zltm90plus.app.data.model.NetworkState
 import com.zltm90plus.app.data.model.RouterDeviceInfo
 import com.zltm90plus.app.data.remote.MockRouterApi
 import com.zltm90plus.app.ui.DashboardUiState
+import com.zltm90plus.app.ui.LoginFormState
 import com.zltm90plus.app.ui.ConnectionPhase
 import com.zltm90plus.app.ui.ZltApp
 import com.zltm90plus.app.ui.screens.BatteryCard
@@ -161,6 +163,44 @@ class ScreenRenderTest {
         composeRule.onNodeWithText("اكتشاف الجهاز تلقائيًا").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("عنوان الجهاز").assertIsDisplayed()
         composeRule.onNodeWithText("كلمة المرور").assertIsDisplayed()
+    }
+
+    @Test
+    fun passwordCanBeRevealedAndHiddenAgain() {
+        // A value that appears nowhere else on the screen: the username also defaults to "admin",
+        // so asserting on that would match the wrong field and pass for the wrong reason.
+        val secret = "s3cret-pass"
+        composeRule.setContent {
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                ZltTheme {
+                    ConnectScreen(
+                        state = DashboardUiState(loginForm = LoginFormState(password = secret)),
+                        onHostChange = {},
+                        onUsernameChange = {},
+                        onPasswordChange = {},
+                        onConnect = {},
+                        onDiscover = {},
+                        onEnableDemo = {},
+                        onDismissMessage = {},
+                        onOpenDiagnostics = {},
+                    )
+                }
+            }
+        }
+
+        // Hidden by default: the control offers to show, and the secret is not painted.
+        composeRule.onNodeWithContentDescription("إظهار كلمة المرور").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText(secret).assertDoesNotExist()
+
+        composeRule.onNodeWithContentDescription("إظهار كلمة المرور").performClick()
+
+        // The label must flip with the state, or TalkBack would describe the wrong action.
+        composeRule.onNodeWithContentDescription("إخفاء كلمة المرور").assertIsDisplayed()
+        composeRule.onNodeWithText(secret).assertIsDisplayed()
+
+        composeRule.onNodeWithContentDescription("إخفاء كلمة المرور").performClick()
+        composeRule.onNodeWithContentDescription("إظهار كلمة المرور").assertIsDisplayed()
+        composeRule.onNodeWithText(secret).assertDoesNotExist()
     }
 
     @Test

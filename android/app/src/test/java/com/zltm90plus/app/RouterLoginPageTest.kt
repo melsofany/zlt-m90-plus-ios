@@ -78,23 +78,34 @@ class RouterLoginPageTest {
         assertEquals("password", endpoint?.passwordField)
     }
 
-    /** This firmware encodes the password before posting it; a page that says so is honoured. */
+    /**
+     * The encoding is never inferred from the page.
+     *
+     * An earlier build decided the encoding from whether the page mentioned `base64`, and the real
+     * page mentions it for unrelated reasons. That flipped this firmware's base64 login to plain
+     * text, which the device answers with its wrong-password code — so a correct password was
+     * reported as wrong. The endpoint now carries only a path and two field names, so there is
+     * nothing for a page to flip.
+     */
     @Test
-    fun `base64 is detected when the page mentions it`() {
-        val html = """
+    fun `a page mentioning base64 changes nothing about the endpoint`() {
+        val withBase64 = """
             <form action="/goform/goform_set_cmd_process">
+              <input name="user"><input name="password">
               <script>form.password.value = base64(password);</script>
             </form>
         """.trimIndent()
+        val without = """
+            <form action="/goform/goform_set_cmd_process">
+              <input name="user"><input name="password">
+            </form>
+        """.trimIndent()
 
-        assertTrue(RouterLoginPage.parse(html)?.passwordBase64 == true)
-    }
-
-    @Test
-    fun `a page that does not mention base64 is taken at its word`() {
-        val html = """<form action="/goform/goform_set_cmd_process"></form>"""
-
-        assertFalse(RouterLoginPage.parse(html)?.passwordBase64 == true)
+        assertEquals(
+            "the page must not be able to change how the password is sent",
+            RouterLoginPage.parse(without),
+            RouterLoginPage.parse(withBase64),
+        )
     }
 
     /** Nothing is invented when the page does not name an endpoint. */
