@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -206,6 +207,63 @@ class ZltRouterApiTest {
         val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
 
         assertNull("a 404 alone must be enough to trigger the page read, got: $error", error)
+    }
+    /**
+     * The fourth field log, replayed.
+     *
+     * The page the device serves is a Vue shell: a `<div id="app">` and two `<script src>` tags, no
+     * form and no endpoint in the HTML at all. The previous build read that page, found nothing, and
+     * kept the configured path — which is why it still answered 404. The endpoint exists only inside
+     * the bundle the shell loads, so the shell has to be followed to its code.
+     */
+    @Test
+    fun `a single page shell is followed to the bundle that holds its endpoints`() = runTest {
+        server.servesSinglePageShell = true
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+        val api = api()
+
+        val error = runCatching { api.login("admin", "admin") }.exceptionOrNull()
+        assertNull("the endpoint must be found in the bundle, got: $error", error)
+        assertTrue("the shell must be fetched", server.pageRequests.get() >= 1)
+        assertTrue("the bundle must be fetched", server.bundleRequests.get() >= 1)
+
+        val readError = runCatching { api.fetchBatteryStatus() }.exceptionOrNull()
+        assertNull("reads must use the discovered path too, got: $readError", readError)
+    }
+
+    /** The device's own code is tried before the megabytes of framework it ships with. */
+    @Test
+    fun `the devices own bundle is read before the framework bundle`() = runTest {
+        server.servesSinglePageShell = true
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+
+        runCatching { api().login("admin", "admin") }
+
+        assertEquals(
+            "only the device's own bundle is worth reading, and it is read once",
+            1,
+            server.bundleRequests.get(),
+        )
+    }
+
+    /**
+     * Nothing is invented when the bundle quotes no endpoint.
+     *
+     * The fake must be made to serve a matching path, or this would pass for the wrong reason: the
+     * configured path would answer and login would succeed without any discovery at all.
+     */
+    @Test
+    fun `a bundle with no endpoint yields no path and login still fails cleanly`() = runTest {
+        server.servesSinglePageShell = true
+        server.appBundleBody = """var nothing={};"""
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+
+        val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
+
+        assertNotNull("login must fail rather than succeed against a guessed path", error)
     }
     @Test
     fun `login falls back to http when the preferred https scheme has no interface`() = runTest {

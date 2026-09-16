@@ -35,6 +35,58 @@ object RouterLoginPage {
     private val SET_CMD = Regex("""([\w./-]*goform_set_cmd_process)""", RegexOption.IGNORE_CASE)
 
     /**
+     * A path the device's own JavaScript names as part of an API.
+     *
+     * Only ever a string the bundle already contains. The app cannot invent a firmware's endpoints,
+     * so this recognises the forms an embedded web UI uses and takes them verbatim.
+     */
+    private val BUNDLE_PATH = Regex(
+        """["'](/[\w/.-]*(?:goform[\w/.-]*|set_cmd_process|get_cmd_process|cgi-bin/[\w/.-]+))["']""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * The scripts a single-page shell loads, in the order worth fetching.
+     *
+     * The shell that firmware 1.12.8 serves names `js/chunk-vendors.js` (a framework bundle) and
+     * `js/app.js` (the device's own code). The device's code is the one that knows its API, so it
+     * is tried first; the framework bundle is not worth the bytes.
+     */
+    fun scriptSources(html: String): List<String> {
+        val sources = Regex("""<script[^>]*\bsrc=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .findAll(html)
+            .map { it.groupValues[1].trim() }
+            .filter { it.isNotBlank() }
+            // A shell may load from a CDN; only the device's own scripts can name its API, and an
+            // off-host URL would be a request the app has no business making.
+            .filterNot { it.startsWith("http://", true) || it.startsWith("https://", true) || it.startsWith("//") }
+            .filterNot { it.startsWith("data:") }
+            // The real shell writes `js/app.js` and `./assist-entry.js`. A relative src resolves
+            // against the page, which is the root, and the path must carry its slash or it would be
+            // concatenated onto the host's port.
+            .map { if (it.startsWith("/")) it else "/" + it.removePrefix("./") }
+            .distinct()
+            .toList()
+        return sources.sortedBy { it.contains("vendor", ignoreCase = true) }
+    }
+
+    /**
+     * The API paths a bundle names, most login-like first, or empty when it names none.
+     *
+     * A `*_set_cmd_process` path is the login endpoint on a goform device, so it is preferred; a
+     * plain `goform` path is next; anything else under a `cgi-bin` prefix is a last resort. Ordering
+     * matters because the caller posts credentials to whatever comes first.
+     */
+    fun endpointsInBundle(script: String): List<String> {
+        val paths = BUNDLE_PATH.findAll(script).map { it.groupValues[1] }.toSet()
+        return paths.sortedWith(
+            compareByDescending<String> { it.contains("set_cmd_process", ignoreCase = true) }
+                .thenByDescending { it.contains("goform", ignoreCase = true) }
+                .thenBy { it },
+        )
+    }
+
+    /**
      * A field naming convention: `name="user"`, `name='user'`, `name=user`, or `"user":`.
      *
      * The attribute form is why the plain `key:` match was not enough — a login form names its

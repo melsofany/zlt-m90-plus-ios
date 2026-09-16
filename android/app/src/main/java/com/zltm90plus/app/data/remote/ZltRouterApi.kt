@@ -814,27 +814,65 @@ class ZltRouterApi(
      */
     private fun discoverLoginEndpoint(scheme: String): RouterLoginPage.Endpoint? {
         val base = baseFor(scheme)
+        val html = fetchText(base, "/") ?: return null
+        // Recorded whatever the parse concludes, because the two failures — a page that names the
+        // endpoint and one that does not — are indistinguishable from the outside and lead to
+        // different fixes.
+        Diagnostics.recordProbe(
+            url = RouterUrl.build(base, "/").toString(),
+            reachable = true,
+            detail = null,
+            durationMillis = 0,
+            page = html,
+        )
+
+        val defaults = RouterLoginPage.Defaults(
+            userField = config.goform.loginUserField,
+            passwordField = config.goform.loginPasswordField,
+        )
+        RouterLoginPage.parse(html, defaults)?.let { return it }
+
+        // No form in the page: this firmware serves a single-page shell, so the API lives in its
+        // JavaScript and the shell itself can never name it. Each script is read and asked for the
+        // paths it quotes — verbatim, never guessed — because an endpoint a bundle does not contain
+        // is not one this device serves.
+        for (script in RouterLoginPage.scriptSources(html)) {
+            val source = fetchText(base, script) ?: continue
+            Diagnostics.recordProbe(
+                url = RouterUrl.build(base, script).toString(),
+                reachable = true,
+                detail = "نص الملف: ${source.length} حرفًا",
+                durationMillis = 0,
+                page = source,
+            )
+            val endpoint = RouterLoginPage.endpointsInBundle(source).firstOrNull()?.let { path ->
+                RouterLoginPage.parse(source, defaults)?.copy(path = path)
+                    ?: defaults.let { RouterLoginPage.Endpoint(path, it.userField, it.passwordField, false) }
+            }
+            if (endpoint != null) return endpoint
+        }
+        return null
+    }
+
+    /**
+     * Reads a page or script as text.
+     *
+     * Bounded by [BUNDLE_LIMIT]: a framework bundle is megabytes and the endpoint is a short string
+     * near the code that uses it, so reading the whole file would cost time on a slow link for no
+     * gain. Buffered to text in one read, because a single-page shell must be read whole before its
+     * script tags can be found.
+     */
+    private fun fetchText(base: String, path: String): String? = runCatching {
         val request = Request.Builder()
-            .url(RouterUrl.build(base, "/"))
+            .url(RouterUrl.build(base, path))
             .applyCommonHeaders(base)
             .get()
             .build()
-        return runCatching {
-            executeRequest(request).use { response ->
-                if (!response.isSuccessful) return@use null
-                // Only the head of the page is needed: the login form appears well before any
-                // script bundle, and this keeps the read bounded.
-                val html = response.peekBody(PAGE_LIMIT)?.string().orEmpty()
-                RouterLoginPage.parse(
-                    html,
-                    RouterLoginPage.Defaults(
-                        userField = config.goform.loginUserField,
-                        passwordField = config.goform.loginPasswordField,
-                    ),
-                )
-            }
-        }.getOrNull()
-    }
+        executeRequest(request).use { response ->
+            if (!response.isSuccessful) return@use null
+            response.peekBody(BUNDLE_LIMIT)?.string().orEmpty()
+        }
+    }.getOrNull()
 
     /** True when the failure means the configured path is not served at all. */
     private fun Throwable.isPathRejected(): Boolean {
@@ -1008,8 +1046,13 @@ class ZltRouterApi(
         /** Enough of a response to identify the firmware's answer without holding it all. */
         private const val PEEK_LIMIT = 64L * 1024L
 
-        /** Enough of a page to reach the login form, well before any script bundle. */
-        private const val PAGE_LIMIT = 96L * 1024L
+        /**
+         * A page or script is read whole in one go, so this only has to exceed a bundle's size.
+         *
+         * A framework bundle is megabytes; eight is ample for the device's own code, and reading a
+         * partial script would risk cutting the endpoint string in half.
+         */
+        private const val BUNDLE_LIMIT = 8L * 1024L * 1024L
         private val TOKEN_ALIASES = listOf("token", "stok", "session", "sessionid", "key")
         private val RESULT_ALIASES = listOf("result")
 

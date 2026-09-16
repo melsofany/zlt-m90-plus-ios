@@ -41,6 +41,18 @@ object DiagnosticLog : DiagnosticsSink {
      * The log as plain text, for the share sheet. Kept readable rather than machine-parseable: it
      * is meant to be pasted into a message, so a person can see what the device answered.
      */
+    /**
+     * Replaces the contents of script and style blocks with a marker.
+     *
+     * A page is mostly bundle text, and dumping it whole would bury the handful of characters that
+     * matter. What is kept is the markup and every script's `src`, which is where a single-page
+     * app names the bundle holding its API — the line this has to be read from.
+     */
+    private fun summarizeScripts(page: String): String =
+        page
+            .replace(Regex("""(?s)<script(?![^>]*\bsrc=)[^>]*>.*?</script>"""), "<script>…</script>")
+            .replace(Regex("""(?s)<style[^>]*>.*?</style>"""), "<style>…</style>")
+
     fun asText(): String = buildString {
         appendLine("# سجل التشخيص — ZLT M90 Plus")
         appendLine("# عدد العمليات: ${exchanges.value.size}")
@@ -52,6 +64,7 @@ object DiagnosticLog : DiagnosticsSink {
             exchange.statusCode?.let { appendLine("حالة HTTP: $it") }
             exchange.redirectLocation?.let { appendLine("التحويل إلى: $it") }
             exchange.error?.let { appendLine("الخطأ: $it") }
+            exchange.pageSource?.let { appendLine("مصدر الصفحة: ${summarizeScripts(it)}") }
             exchange.requestBody?.takeIf { it.isNotEmpty() }?.let { appendLine("الطلب: $it") }
             exchange.responseBody?.takeIf { it.isNotEmpty() }?.let { appendLine("الرد: $it") }
             appendLine()

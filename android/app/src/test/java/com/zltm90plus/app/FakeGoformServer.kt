@@ -32,6 +32,9 @@ class FakeGoformServer(
 
     /** How many times the login page was fetched, to prove the endpoint was learned from it. */
     val pageRequests = AtomicInteger()
+
+    /** How many script bundles were fetched, to prove the shell was followed to its code. */
+    val bundleRequests = AtomicInteger()
     val queriesWithoutSession = AtomicInteger()
     val lastCmd: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
     val lastSetBody: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
@@ -82,22 +85,60 @@ class FakeGoformServer(
     var pagePasswordField: String = "password"
 
     /**
+     * Serve the single-page shell firmware 1.12.8 actually serves, instead of a plain login form.
+     *
+     * The real page is a Vue shell: `<div id="app">` and two `<script src>` tags, with no form and
+     * no endpoint anywhere in the HTML. The endpoint exists only inside the bundle, so a client that
+     * reads just the HTML learns nothing — the failure the field log revealed.
+     */
+    @Volatile
+    var servesSinglePageShell: Boolean = false
+
+    /** The bundle the shell loads, and the endpoints it quotes. */
+    @Volatile
+    var appBundlePath: String = "js/app.js"
+
+    @Volatile
+    var vendorBundlePath: String = "js/chunk-vendors.js"
+
+    @Volatile
+    var appBundleBody: String =
+        """var api={base:"/cgi-bin/goform/goform_set_cmd_process",read:"/cgi-bin/goform/goform_get_cmd_process"};"""
+
+    /** The framework bundle, deliberately huge and free of endpoints, as the real one is. */
+    @Volatile
+    var vendorBundleBody: String = "/* vue */ var framework='" + "x".repeat(200_000) + "';"
+
+    /**
      * The login page this server serves at `/`.
      *
      * A device has to publish the endpoint its form posts to, or the page could not log anyone in,
      * so this is the one source that cannot be a guess about the firmware.
      */
-    private fun loginPageHtml(): String = """
-        <!DOCTYPE html>
-        <html><head><title>ZLT Login</title></head>
-        <body>
-          <form id="loginForm" action="$loginPath" method="post">
-            <input name="$pageUserField" type="text"/>
-            <input name="$pagePasswordField" type="password"/>
-          </form>
-          <script>var enc = base64($pagePasswordField);</script>
-        </body></html>
-    """.trimIndent()
+    private fun loginPageHtml(): String =
+        if (!servesSinglePageShell) {
+            """
+            <!DOCTYPE html>
+            <html><head><title>ZLT Login</title></head>
+            <body>
+              <form id="loginForm" action="$loginPath" method="post">
+                <input name="$pageUserField" type="text"/>
+                <input name="$pagePasswordField" type="password"/>
+              </form>
+              <script>var enc = base64($pagePasswordField);</script>
+            </body></html>
+            """.trimIndent()
+        } else {
+            """
+            <!DOCTYPE html><html lang=""><head><meta charset="utf-8"><title></title>
+            <link href="css/app.css" rel="preload" as="style">
+            <link href="js/app.js" rel="preload" as="script">
+            <link href="js/chunk-vendors.js" rel="preload" as="script">
+            </head><body><div id="app"><div id="first-loading-body"></div></div>
+            <script src="$vendorBundlePath"></script>
+            <script src="$appBundlePath"></script></body></html>
+            """.trimIndent()
+        }
 
     /** The exact page this server serves, so a test can check the parse against the real bytes. */
     fun pageHtml(): String = loginPageHtml()
@@ -166,6 +207,16 @@ class FakeGoformServer(
                 // configured path is named when the test moves the endpoint, so a client that
                 // cannot read the page keeps asking the wrong place and fails.
                 path == "/" -> { pageRequests.incrementAndGet(); Response(200, loginPageHtml()) }
+                // Scripts are served by exact path, so a client that asked for the wrong one, or
+                // never asked, cannot accidentally succeed.
+                path == "/$vendorBundlePath" -> {
+                    bundleRequests.incrementAndGet()
+                    Response(200, vendorBundleBody, listOf("Content-Type" to "application/javascript"))
+                }
+                path == "/$appBundlePath" -> {
+                    bundleRequests.incrementAndGet()
+                    Response(200, appBundleBody, listOf("Content-Type" to "application/javascript"))
+                }
                 else -> Response(404, "<html><body>404 Not Found</body></html>")
             }
             write(socket, response, if (echoRequestLineAsStatus) target else null)

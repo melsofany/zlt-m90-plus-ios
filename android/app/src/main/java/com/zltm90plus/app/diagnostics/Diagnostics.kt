@@ -24,6 +24,14 @@ data class DiagnosticExchange(
      * the client and the firmware disagree about a URL or a scheme.
      */
     val redirectLocation: String? = null,
+    /**
+     * The page a route was discovered from, truncated.
+     *
+     * A single-page app serves a shell whose API lives only in a JavaScript bundle, so the page
+     * says nothing and the app has no endpoint to use. Dumping what was actually received is the
+     * only way to tell that apart from a page that was read wrongly.
+     */
+    val pageSource: String? = null,
 )
 
 /**
@@ -63,6 +71,7 @@ object Diagnostics {
         reachable: Boolean,
         detail: String?,
         durationMillis: Long,
+        page: String? = null,
     ) {
         record(
             DiagnosticExchange(
@@ -74,6 +83,7 @@ object Diagnostics {
                 responseBody = if (reachable) "استجاب" else null,
                 error = if (reachable) null else (detail ?: "لا استجابة"),
                 durationMillis = durationMillis,
+                pageSource = page,
             ),
         )
     }
