@@ -9,10 +9,13 @@
   every other subnet and the app could not reach the device at all.
 
   Cleartext is therefore permitted at the base level and the restriction is enforced in code:
-  ZltRouterApi rejects any host outside RFC1918 / link-local space before it builds a request,
-  so this exemption can never be used for a public address.
+  RouterUrl.base rejects any host outside RFC1918 / link-local space before it builds a request,
+  so this exemption can never be used for a public address. The trust anchors are the platform's
+  own; the router's self-signed certificate is handled per-request in OkHttp, not by weakening the
+  anchors here.
 -->
 <network-security-config>
+    <!--suppress InsecureBaseConfiguration (scoped to private hosts in RouterUrl.base) -->
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />

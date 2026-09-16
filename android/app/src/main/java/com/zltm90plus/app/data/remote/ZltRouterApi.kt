@@ -60,11 +60,25 @@ class ZltRouterApi(
     private val config: RouterRoutesConfig,
     sessionStore: SessionTokenStore,
     private val hostProvider: () -> String = { DEFAULT_ROUTER_HOST },
+    private val schemeProvider: () -> String = { "http" },
     private val clientFactory: (RouterRoutesConfig) -> OkHttpClient = ::defaultClient,
 ) : RouterApiProtocol {
 
     private val session: SessionTokenStore = sessionStore
     private val client: OkHttpClient by lazy { clientFactory(config) }
+
+    /**
+     * Used only for [probeInternet], the one request that goes outside the LAN. Kept separate
+     * from [client] so the router's self-signed certificate exemption cannot apply to a public
+     * host.
+     */
+    private val internetClient: OkHttpClient by lazy { platformTrustClient() }
+
+    /**
+     * The one place a request URL is built. Validation happens here, so no other call site can
+     * skip the private-host check or pick a scheme of its own.
+     */
+    private fun baseUrl(): String = RouterUrl.base(hostProvider(), schemeProvider())
 
     /** Set by [login]; stays [RouterProtocol.AUTO] until a family has been confirmed. */
     @Volatile
@@ -242,9 +256,16 @@ class ZltRouterApi(
         return withContext(Dispatchers.IO) {
             // Reaching the router admin page proves nothing about internet reachability, so the
             // probe targets a neutral endpoint instead of the device itself.
+            //
+            // This is the one request that leaves the LAN, so it uses its own client built with
+            // the platform's trust anchors rather than [client]. [client] accepts the router's
+            // self-signed certificate, which is only defensible for a device on the local
+            // network; reusing it here would make the app accept any certificate for a public
+            // host too.
             val request = Request.Builder().url(INTERNET_PROBE_URL).head().build()
-            runCatching { client.newCall(request).execute().use { it.code == 204 || it.isSuccessful } }
-                .getOrDefault(false)
+            runCatching {
+                internetClient.newCall(request).execute().use { it.code == 204 || it.isSuccessful }
+            }.getOrDefault(false)
         }
     }
 
@@ -253,7 +274,7 @@ class ZltRouterApi(
      * interface is serving here"; only a transport failure rules the address out.
      */
     override suspend fun probeWebInterface(): Boolean = withContext(Dispatchers.IO) {
-        val base = runCatching { RouterUrl.base(hostProvider()) }.getOrNull() ?: return@withContext false
+        val base = runCatching { baseUrl() }.getOrNull() ?: return@withContext false
         val request = Request.Builder()
             .url("$base/")
             .applyCommonHeaders(base)
@@ -418,7 +439,7 @@ class ZltRouterApi(
      * object instead of a bare value, so it is always sent.
      */
     private fun getGoform(cmd: String): Response {
-        val base = RouterUrl.base(hostProvider())
+        val base = baseUrl()
         val url = RouterUrl.build(
             baseUrl = base,
             path = config.goform.getPath,
@@ -443,7 +464,7 @@ class ZltRouterApi(
     }
 
     private fun postForm(path: String, values: Map<String, String>): Response {
-        val base = RouterUrl.base(hostProvider())
+        val base = baseUrl()
         val body: RequestBody = FormBody.Builder()
             .apply { values.forEach { (key, value) -> add(key, value) } }
             .build()
@@ -481,7 +502,7 @@ class ZltRouterApi(
         route: RouterRoutesConfig.Route,
         bodyValues: Map<String, String> = emptyMap(),
     ): Response {
-        val base = RouterUrl.base(hostProvider())
+        val base = baseUrl()
         val builder = Request.Builder().url(RouterUrl.build(base, route.path))
         if (route.method.uppercase() == "POST") {
             if (config.encoding == "json") {
@@ -704,6 +725,9 @@ class ZltRouterApi(
 
     companion object {
         private const val INTERNET_PROBE_URL = "http://connectivitycheck.gstatic.com/generate_204"
+
+        /** The internet probe is a reachability hint, not a load, so it gives up quickly. */
+        private const val INTERNET_PROBE_TIMEOUT_SECONDS = 3L
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android) ZLTM90Plus"
         /** Enough of a response to identify the firmware's answer without holding it all. */
         private const val PEEK_LIMIT = 64L * 1024L
@@ -721,12 +745,34 @@ class ZltRouterApi(
                 trimmed.contains("login", ignoreCase = true)
         }
 
+        /**
+         * A client with the platform's normal trust rules and no certificate exemption.
+         *
+         * [defaultClient] deliberately accepts the router's self-signed certificate. That is only
+         * safe for requests to a private address, so anything reaching the public internet must
+         * come through here instead.
+         */
+        fun platformTrustClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(INTERNET_PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .readTimeout(INTERNET_PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(false)
+            .build()
+
         fun defaultClient(config: RouterRoutesConfig): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(config.connectTimeoutSeconds.toLong(), TimeUnit.SECONDS)
             .readTimeout(config.requestTimeoutSeconds.toLong(), TimeUnit.SECONDS)
             .writeTimeout(config.requestTimeoutSeconds.toLong(), TimeUnit.SECONDS)
             .retryOnConnectionFailure(false)
             .cookieJar(InMemoryCookieJar)
+            // The device's HTTPS presents a self-signed certificate, so the platform's trust
+            // anchors reject the router the user is connected to. Requests only ever go to
+            // private addresses (RouterUrl.base enforces that), so accepting the device's own
+            // certificate does not widen trust for anything reachable on the internet.
+            .sslSocketFactory(
+                PrivateHost.trustingSocketFactory(),
+                PrivateHost.trustingTrustManager(),
+            )
+            .hostnameVerifier { _, _ -> true }
             .build()
     }
 }

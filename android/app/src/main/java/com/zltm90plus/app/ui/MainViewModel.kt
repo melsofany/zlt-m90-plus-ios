@@ -8,6 +8,7 @@ import com.zltm90plus.app.data.model.DataSource
 import com.zltm90plus.app.data.model.DeviceSnapshot
 import com.zltm90plus.app.data.model.NetworkState
 import com.zltm90plus.app.data.remote.MockRouterApi
+import com.zltm90plus.app.data.remote.RouterProbe
 import com.zltm90plus.app.data.remote.RouterError
 import com.zltm90plus.app.data.repository.BatteryHistoryStore
 import com.zltm90plus.app.data.repository.ManualPlanStore
@@ -16,7 +17,6 @@ import com.zltm90plus.app.data.repository.RouterRepository
 import com.zltm90plus.app.data.session.SecureSessionStore
 import com.zltm90plus.app.domain.BatteryEstimator
 import com.zltm90plus.app.util.LocalNetworkChecker
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,13 +24,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import com.zltm90plus.app.diagnostics.DiagnosticExchange
 import com.zltm90plus.app.diagnostics.DiagnosticLog
 import com.zltm90plus.app.diagnostics.Diagnostics
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import java.util.concurrent.TimeUnit
 
 enum class ConnectionPhase {
     IDLE,
@@ -49,6 +45,12 @@ data class LoginFormState(
     val username: String = "admin",
     val password: String = "",
     val rememberHost: Boolean = true,
+    /**
+     * Discovered alongside the address. Defaults to http because every documented firmware build
+     * serves its admin UI over plain HTTP; it flips to https only when the device itself proves
+     * it, by answering a plain-HTTP probe with a redirect or a TLS handshake.
+     */
+    val scheme: String = "http",
 )
 
 data class DashboardUiState(
@@ -90,6 +92,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(DashboardUiState())
     val state: StateFlow<DashboardUiState> = _state.asStateFlow()
 
+    private val probe = RouterProbe()
+
     private var autoRefreshJob: Job? = null
 
     init {
@@ -97,6 +101,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Start the form on the address the phone is actually routing through. The old default
         // was a fixed 192.168.0.1, which is simply the wrong device address on builds that ship
         // 192.168.1.1, and a wrong address looks exactly like a broken app.
+        //
+        // The gateway comes from Android rather than a guess, so on a network whose router is not
+        // at `.1` this still starts on the right address. Discovery only has to run when the
+        // platform cannot tell us, which is when the phone routes through a VPN or a LAN adapter.
         LocalNetworkChecker.currentGatewayIpv4(getApplication())?.let { gateway ->
             _state.update { it.copy(loginForm = it.loginForm.copy(host = gateway)) }
         }
@@ -141,7 +149,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
-            factory.configure(form.host, if (_state.value.demoMode) _state.value.demoScenario else null)
+            factory.configure(
+                host = form.host,
+                scheme = form.scheme,
+                demoScenario = if (_state.value.demoMode) _state.value.demoScenario else null,
+            )
             try {
                 repository.login(form.username, form.password)
                 _state.update { it.copy(phase = ConnectionPhase.CONNECTED) }
@@ -204,11 +216,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
-            val found = probeCandidates(candidates)
+            val result = probeCandidates(candidates)
+            val found = result.found
             _state.update {
                 it.copy(
                     isDiscovering = false,
-                    loginForm = if (found != null) it.loginForm.copy(host = found) else it.loginForm,
+                    // Remembering the scheme matters when the device only serves HTTPS: a login
+                    // over plain http would then fail even though discovery just succeeded.
+                    loginForm = if (found != null) {
+                        it.loginForm.copy(host = found, scheme = result.scheme ?: "http")
+                    } else {
+                        it.loginForm
+                    },
                     phase = if (found != null) ConnectionPhase.IDLE else it.phase,
                     userMessage = when (found) {
                         null -> "لم يستجب أي جهاز على العناوين المجرَّبة (${candidates.size} عنوانًا). " +
@@ -223,31 +242,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Each candidate gets a short deadline so one dead address cannot stall the whole search.
      * Addresses already known to be wrong are skipped by the caller through plain ordering.
+     *
+     * The reachability rule lives in [RouterProbe]: anything that answers HTTP counts, including a
+     * redirect onto the device's own HTTPS or a TLS handshake Android will not complete.
      */
-    private suspend fun probeCandidates(candidates: List<String>): String? {
-        val probeClient = OkHttpClient.Builder()
-            .connectTimeout(1, TimeUnit.SECONDS)
-            .readTimeout(1, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(false)
-            .build()
-        for (candidate in candidates) {
-            val startedAt = System.currentTimeMillis()
-            val outcome = withContext(Dispatchers.IO) {
-                runCatching {
-                    val request = Request.Builder().url("http://$candidate/").get().build()
-                    probeClient.newCall(request).execute().use { true }
-                }
-            }
-            Diagnostics.recordProbe(
-                url = "http://$candidate/",
-                reachable = outcome.getOrDefault(false),
-                detail = outcome.exceptionOrNull()?.let { "${it.javaClass.simpleName}: ${it.message}" },
-                durationMillis = System.currentTimeMillis() - startedAt,
-            )
-            if (outcome.getOrDefault(false)) return candidate
-        }
-        return null
+    private suspend fun probeCandidates(candidates: List<String>): ProbeResult {
+        val hit = probe.firstReachable(candidates)
+        return ProbeResult(found = hit?.first, scheme = hit?.second?.scheme)
     }
+
+    data class ProbeResult(val found: String?, val scheme: String?)
 
     fun disconnect() {
         autoRefreshJob?.cancel()

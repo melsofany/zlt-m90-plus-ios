@@ -86,3 +86,22 @@ Strict layering: `ui/screens` (Compose) → `ui/MainViewModel` (state) → `data
   Robolectric screenshots are the visual regression net.
 - Diagnostic tests install real sockets (`FakeGoformServer`) so capture is asserted on the bytes
   that cross the wire rather than on a mock.
+- `RouterProbeTest` covers discovery against real sockets, including a TLS server that serves a
+  self-signed certificate. The PEM fixtures in `app/src/test/resources/tls/` are test data, not
+  secrets: the certificate is self-signed and the key protects nothing. Regenerate them together
+  if they are ever replaced, or the handshake test will fail on a key/cert mismatch.
+
+## Router transport notes
+
+- The device's admin interface is plain HTTP, but some builds redirect to HTTPS using a
+  self-signed certificate. `RouterProbe` treats **any** HTTP answer — including `302`, `401`,
+  `404` and a TLS handshake failure — as proof the device is present. Only a timeout or a refused
+  connection rules an address out. A redirect or a TLS failure also reports `https` so the login
+  continues on the scheme the device demanded.
+- `ZltRouterApi.defaultClient` accepts the device's self-signed certificate. That exemption is
+  confined to private-address requests: `probeInternet()` builds its own client through
+  `ZltRouterApi.platformTrustClient()`, which keeps the platform trust anchors. Do not merge the
+  two clients — `RouterProbeTest` fails if the internet path can inherit the exemption.
+- Discovery tries the phone's real gateway first (`LocalNetworkChecker.discoveryCandidates`), so
+  the common case is one probe rather than eight. The control UI may place the device on any
+  private subnet, which is why the candidate list is a fallback rather than a fixed default.
