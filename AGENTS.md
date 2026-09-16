@@ -97,6 +97,23 @@ Strict layering: `ui/screens` (Compose) → `ui/MainViewModel` (state) → `data
   actually attempted (`Attempt.attemptedUrl`). Without the latter the log paired
   `DISCOVERY_PROBE http://192.168.8.1/` with a port-443 failure, which reads as a contradiction.
 
+## Never hard-code a firmware route
+
+Firmware 1.12.8 serves a Vue single-page shell: `<div id="app">` plus
+`js/chunk-vendors.js` and `js/app.js`. There is no form and no endpoint in the
+HTML — the endpoint exists only inside the bundle. The configured goform path
+answers 404 on it.
+
+So the app discovers the endpoint at login time: it fetches the page, and if the
+page names no endpoint it follows the shell to the device's own bundle (never the
+framework one) and takes the paths that bundle quotes verbatim. It never
+constructs a path. Discovery only runs when the configured path is rejected or
+the device redirects, and a page it does not understand leaves the configured
+path in place.
+
+When adding a route, ask first whether the device publishes it. `router_routes.json`
+is a fallback, not the source of truth.
+
 ## Testing notes
 
 - Robolectric Compose tests render a small viewport, so call `performScrollTo()` before `assertIsDisplayed()` on anything below the fold.
