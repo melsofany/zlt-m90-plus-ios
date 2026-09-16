@@ -29,6 +29,9 @@ class FakeGoformServer(
     private val serverSocket = ServerSocket(0, 0, InetAddress.getByName("127.0.0.1"))
 
     val loginAttempts = AtomicInteger()
+
+    /** How many times the login page was fetched, to prove the endpoint was learned from it. */
+    val pageRequests = AtomicInteger()
     val queriesWithoutSession = AtomicInteger()
     val lastCmd: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
     val lastSetBody: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
@@ -58,6 +61,46 @@ class FakeGoformServer(
      */
     @Volatile
     var redirectTarget: String? = null
+
+    /**
+     * Where the device really accepts a login, and where it really serves reads.
+     *
+     * Defaults match the configured paths. A test moves them to stand in for firmware 1.12.8, which
+     * answers the configured paths with 404 — the field failure this exists to catch.
+     */
+    @Volatile
+    var loginPath: String = "/goform/goform_set_cmd_process"
+
+    @Volatile
+    var readPath: String = "/goform/goform_get_cmd_process"
+
+    /** Field names the device's page states, so a test can prove they are taken from the page. */
+    @Volatile
+    var pageUserField: String = "user"
+
+    @Volatile
+    var pagePasswordField: String = "password"
+
+    /**
+     * The login page this server serves at `/`.
+     *
+     * A device has to publish the endpoint its form posts to, or the page could not log anyone in,
+     * so this is the one source that cannot be a guess about the firmware.
+     */
+    private fun loginPageHtml(): String = """
+        <!DOCTYPE html>
+        <html><head><title>ZLT Login</title></head>
+        <body>
+          <form id="loginForm" action="$loginPath" method="post">
+            <input name="$pageUserField" type="text"/>
+            <input name="$pagePasswordField" type="password"/>
+          </form>
+          <script>var enc = base64($pagePasswordField);</script>
+        </body></html>
+    """.trimIndent()
+
+    /** The exact page this server serves, so a test can check the parse against the real bytes. */
+    fun pageHtml(): String = loginPageHtml()
 
     @Volatile
     private var running = true
@@ -117,9 +160,13 @@ class FakeGoformServer(
                 return
             }
             val response = when {
-                path.endsWith("/goform/goform_set_cmd_process") -> handleSet(body)
-                path.endsWith("/goform/goform_get_cmd_process") -> handleGet(query, headers)
-                else -> Response(200, "<html><body>login</body></html>")
+                path.endsWith(loginPath) && path.contains("set_cmd_process") -> handleSet(body)
+                path.endsWith(readPath) && path.contains("get_cmd_process") -> handleGet(query, headers)
+                // The page a real device serves, naming the endpoint it posts a login to. Only the
+                // configured path is named when the test moves the endpoint, so a client that
+                // cannot read the page keeps asking the wrong place and fails.
+                path == "/" -> { pageRequests.incrementAndGet(); Response(200, loginPageHtml()) }
+                else -> Response(404, "<html><body>404 Not Found</body></html>")
             }
             write(socket, response, if (echoRequestLineAsStatus) target else null)
         }

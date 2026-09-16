@@ -168,10 +168,45 @@ class ZltRouterApiTest {
     }
 
     /**
-     * The other half of the field failure: discovery saw a redirect on `GET /` and switched the
-     * whole app to https, where this firmware answers every API path with 404. A preference for
-     * https must not become a dead end when only http serves the interface.
+     * The third field log, replayed.
+     *
+     * Firmware 1.12.8 answered the configured goform path with 404 over https, and its own login
+     * page named a different endpoint. The app cannot guess a firmware's paths, so it reads the one
+     * the device publishes and uses it — including for the reads that follow.
      */
+    @Test
+    fun `a path the device rejects is replaced by the one its login page names`() = runTest {
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+        val api = api()
+
+        // The configured path is /goform/...; the device serves only its own, so this can only
+        // succeed by reading the page.
+        val error = runCatching { api.login("admin", "admin") }.exceptionOrNull()
+        assertNull("the login must use the endpoint the device named, got: $error", error)
+        assertEquals(
+            "the endpoint must be learned from the device's own page",
+            1,
+            server.pageRequests.get(),
+        )
+
+        // A read must follow the learned path too, or login would succeed and everything after it
+        // would 404 — the failure mode this whole change exists to avoid.
+        val readError = runCatching { api.fetchBatteryStatus() }.exceptionOrNull()
+        assertNull("reads must use the learned path as well, got: $readError", readError)
+    }
+
+    @Test
+    fun `the endpoint is taken from the page even with no redirect at all`() = runTest {
+        // No redirect, no malformed status line: only a 404 on the configured path. The page is
+        // still the answer, because the path was a guess either way.
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+
+        val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
+
+        assertNull("a 404 alone must be enough to trigger the page read, got: $error", error)
+    }
     @Test
     fun `login falls back to http when the preferred https scheme has no interface`() = runTest {
         // The fake answers the API over http; asking it to serve https is what the 404 stands in

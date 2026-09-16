@@ -19,6 +19,7 @@ import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.FormBody
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -109,6 +110,31 @@ class ZltRouterApi(
     /** The device's own address, if it has named one, ahead of the configured host. */
     private fun authority(): String = redirectedAuthority ?: hostProvider()
 
+    /**
+     * Where the device's login page says it posts a login, learned at login time.
+     *
+     * Null until the page has been read. Purely an override: when it is null the configured path is
+     * used, so a device whose page this does not understand behaves exactly as before.
+     */
+    @Volatile
+    private var loginEndpoint: RouterLoginPage.Endpoint? = null
+
+    /** The real login path, taken from the device's page when it named one. */
+    private fun setCmdPath(): String = loginEndpoint?.path ?: config.goform.setPath
+
+    /**
+     * The read path, matched to the learned login path so the two stay on the same interface.
+     *
+     * The two endpoints are siblings under the same prefix on this firmware, so a device that
+     * serves its login somewhere else serves its reads alongside it. Only the `set`/`get` part is
+     * swapped, because that is the one word that differs between them.
+     */
+    private fun getCmdPath(): String {
+        val learned = loginEndpoint?.path ?: return config.goform.getPath
+        if (!learned.contains("set_cmd_process")) return config.goform.getPath
+        return learned.replace("set_cmd_process", "get_cmd_process")
+    }
+
     /** The preferred scheme first, then the other, so one wrong guess cannot block a connection. */
     private fun schemeCandidates(): List<String> =
         if (schemeProvider().equals("https", ignoreCase = true)) listOf("https", "http")
@@ -122,6 +148,9 @@ class ZltRouterApi(
         val interfaces = config.protocolOrder.ifEmpty { DEFAULT_PROTOCOL_ORDER }
         var lastError: Throwable? = null
         var followedRedirect = false
+        // Guards the page read so a device that rejects every path cannot be asked for its page
+        // once per scheme and interface combination.
+        var endpointLearned = false
 
         // Outer loop over schemes, inner over interface families: a device serving its admin only
         // over HTTP would otherwise be missed whenever discovery happened to see a redirect.
@@ -156,14 +185,17 @@ class ZltRouterApi(
                         continue
                     }
                     followedRedirect = true
-                    redirectedAuthority = error.authority
-                    resolvedScheme = error.scheme
+                    followRedirect(error.authority)
+                    // The redirect is the first sign that the configured path is a guess about the
+                    // firmware, so the device's own login page is asked where it really posts.
+                    endpointLearned = true
+                    discoverLoginEndpoint(resolvedScheme ?: scheme)?.let { loginEndpoint = it }
                     try {
                         if (candidate == RouterRoutesConfig.GOFORM) {
-                            loginGoform(username, password, error.scheme)
+                            loginGoform(username, password, resolvedScheme ?: error.scheme)
                             protocol = RouterProtocol.GOFORM
                         } else {
-                            loginLuci(username, password, error.scheme)
+                            loginLuci(username, password, resolvedScheme ?: error.scheme)
                             protocol = RouterProtocol.LUCI
                         }
                         return@withContext
@@ -175,6 +207,29 @@ class ZltRouterApi(
                         if (retry.rank() >= (lastError?.rank() ?: Int.MIN_VALUE)) lastError = retry
                     }
                 } catch (error: Throwable) {
+                    // A 404 on the configured path means the path is a guess about the firmware, so
+                    // the device's own login page is asked where it really posts — once, and only
+                    // ever when the configured path could not be reached at all.
+                    if (!endpointLearned && error.isPathRejected()) {
+                        endpointLearned = true
+                        if (discoverLoginEndpoint(scheme)?.let { loginEndpoint = it } != null) {
+                            try {
+                                if (candidate == RouterRoutesConfig.GOFORM) {
+                                    loginGoform(username, password, scheme)
+                                    protocol = RouterProtocol.GOFORM
+                                } else {
+                                    loginLuci(username, password, scheme)
+                                    protocol = RouterProtocol.LUCI
+                                }
+                                resolvedScheme = scheme
+                                return@withContext
+                            } catch (retry: RouterError.InvalidCredentials) {
+                                throw retry
+                            } catch (retry: Throwable) {
+                                if (retry.rank() >= (lastError?.rank() ?: Int.MIN_VALUE)) lastError = retry
+                            }
+                        }
+                    }
                     // Anything else — a 404 on this scheme, a timeout, an unreadable answer — is
                     // worth retrying on the other scheme, so it is kept and the search continues.
                     // The most informative failure is the one reported, not merely the last: a
@@ -363,14 +418,19 @@ class ZltRouterApi(
 
     private fun loginGoform(username: String, password: String, scheme: String) {
         val goform = config.goform
+        val endpoint = loginEndpoint
         val response = postForm(
-            path = goform.setPath,
+            // The device's own login page decides the path and the field names where it stated
+            // them. The configured values remain the fallback, because a page this does not
+            // understand must not change how the request is built.
+            path = endpoint?.path ?: goform.setPath,
             values = mapOf(
                 // The firmware dispatches on goformId; a login body without it is ignored.
                 "isTest" to "false",
                 "goformId" to goform.loginGoformId,
-                goform.loginUserField to username.ifBlank { goform.username },
-                goform.loginPasswordField to encodePassword(password, goform.loginPasswordEncoding),
+                (endpoint?.userField ?: goform.loginUserField) to username.ifBlank { goform.username },
+                (endpoint?.passwordField ?: goform.loginPasswordField) to
+                    encodePassword(password, if (endpoint?.passwordBase64 == false) "plain" else goform.loginPasswordEncoding),
             ),
             scheme = scheme,
         )
@@ -523,7 +583,7 @@ class ZltRouterApi(
         val base = baseFor(scheme)
         val url = RouterUrl.build(
             baseUrl = base,
-            path = config.goform.getPath,
+            path = getCmdPath(),
             params = mapOf("isTest" to "false", "multi_data" to "1", "cmd" to cmd),
         )
         return executeRequest(Request.Builder().url(url).applyCommonHeaders(base).get().build())
@@ -531,7 +591,7 @@ class ZltRouterApi(
 
     private fun setGoform(goformId: String, values: Map<String, String>, routeKey: String) {
         postForm(
-            path = config.goform.setPath,
+            path = setCmdPath(),
             values = mapOf("isTest" to "false", "goformId" to goformId) + values,
         ).use { response ->
             ensureSuccess(response, routeKey)
@@ -722,6 +782,69 @@ class ZltRouterApi(
     private fun baseAuthority(): String =
         RouterUrl.base(authority(), resolvedScheme ?: schemeProvider()).removePrefix("http://").removePrefix("https://")
 
+    /**
+     * The address a redirect pointed at, rebuilt from the scheme to use for the next request.
+     *
+     * The device names a port in its redirect, and that port belongs to the scheme it chose: taking
+     * the port without the scheme produced `http://192.168.8.1:443`, which nothing serves. That was
+     * a bug in the redirect handling, visible in the field log as attempt 3.
+     */
+    private fun followRedirect(target: String) {
+        val parsed = "http://${target.removePrefix("http://").removePrefix("https://")}"
+            .toHttpUrlOrNull() ?: return
+        val https = parsed.port == 443
+        resolvedScheme = if (https) "https" else "http"
+        redirectedAuthority = if ((https && parsed.port == 443) || (!https && parsed.port == 80)) {
+            // The port is the scheme's default, so it adds nothing and is dropped for legibility.
+            parsed.host
+        } else {
+            "${parsed.host}:${parsed.port}"
+        }
+    }
+
+    /**
+     * Asks the device's own login page where it accepts a login.
+     *
+     * A GET, so it needs no credentials, and it is the only source that cannot be wrong: the page
+     * has to name the endpoint it posts to. The configured path is a guess about the firmware, and
+     * this firmware answers it with 404.
+     *
+     * @return the endpoint, or null when the page could not be read; a caller that gets null keeps
+     *     the configured defaults rather than swapping one guess for another.
+     */
+    private fun discoverLoginEndpoint(scheme: String): RouterLoginPage.Endpoint? {
+        val base = baseFor(scheme)
+        val request = Request.Builder()
+            .url(RouterUrl.build(base, "/"))
+            .applyCommonHeaders(base)
+            .get()
+            .build()
+        return runCatching {
+            executeRequest(request).use { response ->
+                if (!response.isSuccessful) return@use null
+                // Only the head of the page is needed: the login form appears well before any
+                // script bundle, and this keeps the read bounded.
+                val html = response.peekBody(PAGE_LIMIT)?.string().orEmpty()
+                RouterLoginPage.parse(
+                    html,
+                    RouterLoginPage.Defaults(
+                        userField = config.goform.loginUserField,
+                        passwordField = config.goform.loginPasswordField,
+                    ),
+                )
+            }
+        }.getOrNull()
+    }
+
+    /** True when the failure means the configured path is not served at all. */
+    private fun Throwable.isPathRejected(): Boolean {
+        if (this is RouterError.FeatureNotSupported) return true
+        if (this !is RouterError) return false
+        // The 404 is carried as the technical detail, not as the message — the message is the
+        // Arabic text shown to the user, so looking for the code there never matched.
+        return technicalDetail?.contains("404") == true
+    }
+
     /** True when anything in the cause chain is a malformed-reply error. */
     private fun Throwable.hasProtocolCause(): Boolean =
         generateSequence(this) { it.cause }.any { it is java.net.ProtocolException }
@@ -884,6 +1007,9 @@ class ZltRouterApi(
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android) ZLTM90Plus"
         /** Enough of a response to identify the firmware's answer without holding it all. */
         private const val PEEK_LIMIT = 64L * 1024L
+
+        /** Enough of a page to reach the login form, well before any script bundle. */
+        private const val PAGE_LIMIT = 96L * 1024L
         private val TOKEN_ALIASES = listOf("token", "stok", "session", "sessionid", "key")
         private val RESULT_ALIASES = listOf("result")
 
