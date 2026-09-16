@@ -51,6 +51,14 @@ class FakeGoformServer(
     @Volatile
     var goformReturns404 = false
 
+    /**
+     * When the malformed reply is served, this is the `Location` it carries, so a test can stand in
+     * for the device that answers the configured address with a redirect to the port it really
+     * listens on.
+     */
+    @Volatile
+    var redirectTarget: String? = null
+
     @Volatile
     private var running = true
 
@@ -113,7 +121,7 @@ class FakeGoformServer(
                 path.endsWith("/goform/goform_get_cmd_process") -> handleGet(query, headers)
                 else -> Response(200, "<html><body>login</body></html>")
             }
-            write(socket, response, if (echoRequestLineAsStatus) requestLine else null)
+            write(socket, response, if (echoRequestLineAsStatus) target else null)
         }
     }
 
@@ -180,6 +188,7 @@ class FakeGoformServer(
         if (echoStatusInsteadOf != null) {
             // "/goform/goform_set_cmd_process HTTP/1.1 301 Moved Permanently", exactly as seen.
             writer.write(echoStatusInsteadOf + " HTTP/1.1 301 Moved Permanently\r\n")
+            redirectTarget?.let { writer.write("Location: $it\r\n") }
             writer.write("Content-Length: ${payload.size}\r\n")
             writer.write("Connection: close\r\n\r\n")
             writer.flush()

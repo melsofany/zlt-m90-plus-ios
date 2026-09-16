@@ -82,7 +82,7 @@ class ZltRouterApi(
 
     /** The same URL builder, pinned to one scheme for the duration of a login attempt. */
     private fun baseFor(scheme: String?): String =
-        RouterUrl.base(hostProvider(), scheme ?: resolvedScheme ?: schemeProvider())
+        RouterUrl.base(authority(), scheme ?: resolvedScheme ?: schemeProvider())
 
     /**
      * The scheme that actually answered, learned by [login]. Null until a login has succeeded.
@@ -94,6 +94,20 @@ class ZltRouterApi(
      */
     @Volatile
     private var resolvedScheme: String? = null
+
+    /**
+     * The address the device named in a redirect, once one has been followed.
+     *
+     * The configured host is not always the one that serves the interface: this device answers
+     * `192.168.8.1` with a redirect to the port it actually listens on. Once that address is
+     * known, every later request is built against it, so a follow-up read does not have to
+     * rediscover it.
+     */
+    @Volatile
+    private var redirectedAuthority: String? = null
+
+    /** The device's own address, if it has named one, ahead of the configured host. */
+    private fun authority(): String = redirectedAuthority ?: hostProvider()
 
     /** The preferred scheme first, then the other, so one wrong guess cannot block a connection. */
     private fun schemeCandidates(): List<String> =
@@ -107,6 +121,7 @@ class ZltRouterApi(
     override suspend fun login(username: String, password: String) = withContext(Dispatchers.IO) {
         val interfaces = config.protocolOrder.ifEmpty { DEFAULT_PROTOCOL_ORDER }
         var lastError: Throwable? = null
+        var followedRedirect = false
 
         // Outer loop over schemes, inner over interface families: a device serving its admin only
         // over HTTP would otherwise be missed whenever discovery happened to see a redirect.
@@ -132,6 +147,33 @@ class ZltRouterApi(
                     // Kept separate from the branch below so an absent device costs one attempt
                     // rather than four.
                     throw error
+                } catch (error: RouterError.Redirected) {
+                    // The device named the address that serves this interface, so the request is
+                    // repeated there. Only once: a device that keeps redirecting would otherwise
+                    // be followed until the app gave up, and the second answer is the real one.
+                    if (followedRedirect) {
+                        if (error.rank() >= (lastError?.rank() ?: Int.MIN_VALUE)) lastError = error
+                        continue
+                    }
+                    followedRedirect = true
+                    redirectedAuthority = error.authority
+                    resolvedScheme = error.scheme
+                    try {
+                        if (candidate == RouterRoutesConfig.GOFORM) {
+                            loginGoform(username, password, error.scheme)
+                            protocol = RouterProtocol.GOFORM
+                        } else {
+                            loginLuci(username, password, error.scheme)
+                            protocol = RouterProtocol.LUCI
+                        }
+                        return@withContext
+                    } catch (retry: RouterError.InvalidCredentials) {
+                        // The redirected address answered and rejected the credentials, which is a
+                        // definite answer rather than another place to try.
+                        throw retry
+                    } catch (retry: Throwable) {
+                        if (retry.rank() >= (lastError?.rank() ?: Int.MIN_VALUE)) lastError = retry
+                    }
                 } catch (error: Throwable) {
                     // Anything else — a 404 on this scheme, a timeout, an unreadable answer — is
                     // worth retrying on the other scheme, so it is kept and the search continues.
@@ -616,6 +658,12 @@ class ZltRouterApi(
             if (error is com.zltm90plus.app.data.remote.RouterError) {
                 error.technicalDetail?.let { add("detail=$it") }
             }
+            // The address a redirect named, so the log shows where the device pointed even when
+            // following it did not work. Without this the entry read only as "unreadable reply",
+            // which hid the one piece of information the device had volunteered.
+            if (error is com.zltm90plus.app.data.remote.RouterError.Redirected) {
+                add("redirect=${error.scheme}://${error.authority}")
+            }
             if (root !== error) add("root=${root.javaClass.simpleName}: ${root.message}")
         }
         return DiagnosticRedaction.redact(parts.joinToString(" | "))
@@ -643,20 +691,36 @@ class ZltRouterApi(
         } catch (e: ConnectException) {
             throw RouterError.DeviceNotFound(e.message)
         } catch (e: java.net.ProtocolException) {
-            // The device answered, but with something that is not a valid HTTP status line. This
-            // firmware runs the GoAhead embedded server, which has been observed to answer a
-            // request line verbatim under connection reuse; the bytes on the wire were
-            // "/goform/goform_set_cmd_process HTTP/1.1 301 Moved Permanently". Calling that a
-            // temporary failure invited the user to retry a request that can only answer the same
-            // way, so it is reported as what it is: a reply this client cannot use.
-            throw RouterError.DeviceResponseUnreadable(e.message)
+            // The device answered with a status line OkHttp will not parse. The reply is read a
+            // second time over a plain socket, because that is the only way to recover the
+            // Location header OkHttp's validation destroyed — and the Location is what says where
+            // the interface really is. Ignoring it is why a device that was plainly answering
+            // looked unreachable.
+            throw malformedReply(request.url.encodedPath, e)
         } catch (e: IOException) {
             // OkHttp wraps the same malformed reply, so the cause chain is checked before the
             // error is dismissed as transient.
-            if (e.hasProtocolCause()) throw RouterError.DeviceResponseUnreadable(e.message)
+            if (e.hasProtocolCause()) throw malformedReply(request.url.encodedPath, e)
             // Deliberately excludes the request body, which may carry credentials.
             throw RouterError.TemporaryFailure(e.javaClass.simpleName, e)
         }
+
+    /**
+     * Turns a malformed reply into either "the device named another address" or "the reply is
+     * unusable", by reading the reply directly. Never throws.
+     */
+    private fun malformedReply(path: String, cause: Throwable): RouterError {
+        val target = RouterRedirect.probeHttp(baseAuthority(), path)
+        return if (target != null) {
+            RouterError.Redirected(target.scheme, target.authority, cause.message)
+        } else {
+            RouterError.DeviceResponseUnreadable(cause.message)
+        }
+    }
+
+    /** Host (and port) of the configured device, used to re-read a refused reply. */
+    private fun baseAuthority(): String =
+        RouterUrl.base(authority(), resolvedScheme ?: schemeProvider()).removePrefix("http://").removePrefix("https://")
 
     /** True when anything in the cause chain is a malformed-reply error. */
     private fun Throwable.hasProtocolCause(): Boolean =
@@ -671,6 +735,10 @@ class ZltRouterApi(
     private fun Throwable.rank(): Int = when (this) {
         is RouterError.InvalidCredentials -> 40
         is RouterError.DeviceResponseUnreadable -> 30
+        // Above a silence and below an unreadable reply: the device did answer, and it named
+        // somewhere to go, but a redirect that led nowhere says less than a reply that could not
+        // be read at all.
+        is RouterError.Redirected -> 28
         is RouterError.FeatureNotSupported -> 25
         is RouterError.UnsupportedFirmware -> 20
         is RouterError.Timeout -> 10

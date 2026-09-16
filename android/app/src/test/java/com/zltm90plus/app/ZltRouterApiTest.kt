@@ -133,6 +133,41 @@ class ZltRouterApiTest {
     }
 
     /**
+     * The second field log, replayed.
+     *
+     * The device answered every attempt with a status line that repeated the request line, and hid
+     * a redirect to the port it actually serves on underneath. The parsed reply could never show
+     * that target, so the app reported "unreadable reply" four times and never followed it.
+     */
+    @Test
+    fun `a redirect hidden under a malformed status line is followed to where it points`() = runTest {
+        // The address the device refuses, which points at the port that actually serves it.
+        val redirecting = FakeGoformServer().start()
+        val serving = FakeGoformServer().start()
+        server = serving
+        try {
+            redirecting.echoRequestLineAsStatus = true
+            redirecting.redirectTarget = "http://127.0.0.1:${serving.port}/"
+            val api = ZltRouterApi(
+                config = RouterRoutesConfig.parse(routesJson),
+                sessionStore = session,
+                hostProvider = { "${redirecting.host}:${redirecting.port}" },
+            )
+
+            val error = runCatching { api.login("admin", "admin") }.exceptionOrNull()
+
+            assertNull("the redirect must be followed, not reported as a failure: $error", error)
+            assertEquals(
+                "the login must land on the address the device named",
+                1,
+                serving.loginAttempts.get(),
+            )
+        } finally {
+            redirecting.stop()
+        }
+    }
+
+    /**
      * The other half of the field failure: discovery saw a redirect on `GET /` and switched the
      * whole app to https, where this firmware answers every API path with 404. A preference for
      * https must not become a dead end when only http serves the interface.

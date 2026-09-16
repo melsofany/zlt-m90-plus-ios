@@ -23,18 +23,26 @@ sealed class RouterError(
         RouterError("اسم المستخدم أو كلمة المرور غير صحيحة.")
 
     /**
-     * The device answered, but not with HTTP this client can use: a status line that is not a
-     * status line, or a redirect that goes somewhere unsafe to follow.
+     * The device answered, but not with HTTP this client can use.
      *
      * Kept apart from [TemporaryFailure] on purpose. Retrying cannot help — the same request will
      * produce the same answer — and telling the user "حدث خطأ مؤقت، أعد المحاولة" is what turned a
      * device that was clearly replying into what looked like a network fault.
      */
-    class DeviceResponseUnreadable(detail: String? = null) :
+    class DeviceResponseUnreadable(detail: String? = null, val rawReply: String? = null) :
         RouterError(
             "ردّ الجهاز باستجابة غير مفهومة، ولم يُكمل التطبيق الطلب. السجل أدناه يوضح ما ردّ به الجهاز.",
             detail,
         )
+
+    /**
+     * The device refused the request and named the address that does serve it.
+     *
+     * The follow-up request is built by the API layer, which owns the route paths; this only
+     * carries the target so the reason stays legible in the connection log.
+     */
+    class Redirected(val scheme: String, val authority: String, detail: String? = null) :
+        RouterError("الجهاز يحوّل الطلب إلى عنوان آخر. أعاد التطبيق المحاولة على العنوان الجديد.", detail)
 
     /**
      * The phone is on a Wi-Fi network, but not the one the device is on.
