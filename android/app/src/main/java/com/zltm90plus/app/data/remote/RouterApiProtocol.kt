@@ -45,6 +45,12 @@ interface RouterApiProtocol {
     /** Drops any stored session. Safe to call at any time. */
     suspend fun logout()
 
-    /** Reachability probe that does not depend on the router web UI responding. */
+    /** Probe that does not depend on the router web UI responding. */
     suspend fun probeInternet(): Boolean
+
+    /**
+     * Reports whether a web interface answers at the configured host, without credentials.
+     * Used by device discovery to test candidate addresses instead of guessing one.
+     */
+    suspend fun probeWebInterface(): Boolean
 }

@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Local device access only.
-  Cleartext HTTP is permitted for RFC1918 private addresses because the ZLT M90 Plus admin
-  interface serves plain HTTP on the LAN. Everything else stays HTTPS-only.
+
+  The ZLT M90 Plus admin interface is plain HTTP and its LAN address is not fixed: factory
+  builds ship with 192.168.1.1, 192.168.70.1 or 192.168.100.1 depending on the carrier, and a
+  user who renumbered the LAN can place the device on any private subnet. Android matches
+  literal host names only (no CIDR), so enumerating a handful of gateway addresses blocked
+  every other subnet and the app could not reach the device at all.
+
+  Cleartext is therefore permitted at the base level and the restriction is enforced in code:
+  ZltRouterApi rejects any host outside RFC1918 / link-local space before it builds a request,
+  so this exemption can never be used for a public address.
 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false">
+    <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
     </base-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">192.168.0.1</domain>
-        <domain includeSubdomains="false">192.168.1.1</domain>
-        <domain includeSubdomains="false">192.168.8.1</domain>
-        <domain includeSubdomains="false">192.168.10.1</domain>
-        <domain includeSubdomains="false">10.0.0.1</domain>
-        <domain includeSubdomains="false">172.16.0.1</domain>
-    </domain-config>
 </network-security-config>

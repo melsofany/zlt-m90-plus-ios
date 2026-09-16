@@ -16,6 +16,7 @@ import com.zltm90plus.app.data.repository.RouterRepository
 import com.zltm90plus.app.data.session.SecureSessionStore
 import com.zltm90plus.app.domain.BatteryEstimator
 import com.zltm90plus.app.util.LocalNetworkChecker
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +24,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 
 enum class ConnectionPhase {
     IDLE,
@@ -55,6 +60,7 @@ data class DashboardUiState(
     val technicalDetail: String? = null,
     val showTechnicalDetails: Boolean = false,
     val wifiConnected: Boolean = false,
+    val isDiscovering: Boolean = false,
     val lastRefreshMillis: Long? = null,
     val batteryHistory: List<com.zltm90plus.app.data.model.BatteryReading> = emptyList(),
 ) {
@@ -85,6 +91,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         refreshNetworkPresence()
+        // Start the form on the address the phone is actually routing through. The old default
+        // was a fixed 192.168.0.1, which is simply the wrong device address on builds that ship
+        // 192.168.1.1, and a wrong address looks exactly like a broken app.
+        LocalNetworkChecker.currentGatewayIpv4(getApplication())?.let { gateway ->
+            _state.update { it.copy(loginForm = it.loginForm.copy(host = gateway)) }
+        }
     }
 
     // --- connection ------------------------------------------------------------------------
@@ -125,16 +137,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
 
-        if (!_state.value.demoMode && !presence.connectedToWifi) {
-            _state.update {
-                it.copy(
-                    phase = ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK,
-                    userMessage = RouterError.PhoneNotConnectedToDeviceNetwork().userMessage,
-                )
-            }
-            return
-        }
-
         viewModelScope.launch {
             factory.configure(form.host, if (_state.value.demoMode) _state.value.demoScenario else null)
             try {
@@ -143,11 +145,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 refresh()
                 startAutoRefresh()
             } catch (error: Throwable) {
+                // Not being on Wi-Fi is the likeliest reason the device did not answer, and it
+                // has its own actionable message, so it refines an unreachable result rather
+                // than blocking the attempt up front (a LAN adapter or VPN makes the platform's
+                // Wi-Fi flag unreliable).
+                val phase = if (!presence.connectedToWifi && error.isUnreachable()) {
+                    ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK
+                } else {
+                    mapError(error)
+                }
                 _state.update {
                     it.copy(
-                        phase = mapError(error),
-                        userMessage = (error as? RouterError)?.userMessage
-                            ?: "تعذر الاتصال بالجهاز. حاول مرة أخرى.",
+                        phase = phase,
+                        userMessage = if (phase == ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK) {
+                            RouterError.PhoneNotConnectedToDeviceNetwork().userMessage
+                        } else {
+                            (error as? RouterError)?.userMessage ?: "تعذر الاتصال بالجهاز. حاول مرة أخرى."
+                        },
                         technicalDetail = (error as? RouterError)?.technicalDetail,
                     )
                 }
@@ -155,25 +169,74 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Best-effort discovery of the router on the current subnet. */
+    private fun Throwable.isUnreachable(): Boolean =
+        this is RouterError.DeviceNotFound || this is RouterError.Timeout
+
+    /**
+     * Looks for the router on the current network.
+     *
+     * The previous version only guessed `x.y.z.1` from the phone's address and reported it as if
+     * it had been confirmed, which is exactly the kind of fabricated result this app must not
+     * present. This probes every candidate and only claims one that actually answered.
+     */
     fun discoverDevice() {
         val presence = LocalNetworkChecker.current(getApplication())
-        val candidate = presence.localIpv4
-            ?.split(".")
-            ?.takeIf { it.size == 4 }
-            ?.let { "${it[0]}.${it[1]}.${it[2]}.1" }
-            ?: "192.168.0.1"
+        val gateway = LocalNetworkChecker.currentGatewayIpv4(getApplication())
+        val candidates = LocalNetworkChecker.discoveryCandidates(presence.localIpv4, gateway)
         _state.update {
             it.copy(
-                loginForm = it.loginForm.copy(host = candidate),
                 wifiConnected = presence.connectedToWifi,
+                isDiscovering = true,
                 userMessage = if (!presence.connectedToWifi) {
                     RouterError.PhoneNotConnectedToDeviceNetwork().userMessage
                 } else {
-                    "تم اقتراح العنوان $candidate بناءً على شبكتك الحالية. عدّله إذا كان مختلفًا."
+                    "جاري البحث عن الجهاز على الشبكة…"
                 },
             )
         }
+
+        if (!presence.connectedToWifi) {
+            _state.update { it.copy(isDiscovering = false) }
+            return
+        }
+
+        viewModelScope.launch {
+            val found = probeCandidates(candidates)
+            _state.update {
+                it.copy(
+                    isDiscovering = false,
+                    loginForm = if (found != null) it.loginForm.copy(host = found) else it.loginForm,
+                    phase = if (found != null) ConnectionPhase.IDLE else it.phase,
+                    userMessage = when (found) {
+                        null -> "لم يستجب أي جهاز على العناوين المجرَّبة (${candidates.size} عنوانًا). " +
+                            "افتح لوحة الإدارة في المتصفح وتأكد من العنوان، ثم أدخله يدويًا."
+                        else -> "تم العثور على جهاز يستجيب على العنوان $found. أدخل بيانات الدخول واضغط اتصال بالجهاز."
+                    },
+                )
+            }
+        }
+    }
+
+    /**
+     * Each candidate gets a short deadline so one dead address cannot stall the whole search.
+     * Addresses already known to be wrong are skipped by the caller through plain ordering.
+     */
+    private suspend fun probeCandidates(candidates: List<String>): String? {
+        val probeClient = OkHttpClient.Builder()
+            .connectTimeout(1, TimeUnit.SECONDS)
+            .readTimeout(1, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(false)
+            .build()
+        for (candidate in candidates) {
+            val reachable = withContext(Dispatchers.IO) {
+                runCatching {
+                    val request = Request.Builder().url("http://$candidate/").get().build()
+                    probeClient.newCall(request).execute().use { true }
+                }.getOrDefault(false)
+            }
+            if (reachable) return candidate
+        }
+        return null
     }
 
     fun disconnect() {
@@ -305,7 +368,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun mapError(error: Throwable): ConnectionPhase = when (error) {
         is RouterError.InvalidCredentials -> ConnectionPhase.INVALID_CREDENTIALS
-        is RouterError.DeviceNotFound -> ConnectionPhase.DEVICE_NOT_FOUND
+        is RouterError.DeviceNotFound, is RouterError.InvalidHost -> ConnectionPhase.DEVICE_NOT_FOUND
         is RouterError.PhoneNotConnectedToDeviceNetwork -> ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK
         is RouterError.UnsupportedFirmware -> ConnectionPhase.UNSUPPORTED_FIRMWARE
         is RouterError.SessionExpired -> ConnectionPhase.SESSION_EXPIRED

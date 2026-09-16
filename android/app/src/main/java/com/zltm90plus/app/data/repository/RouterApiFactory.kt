@@ -21,6 +21,13 @@ class RouterApiFactory(
 
     private val selection = AtomicReference<Selection?>()
 
+    /**
+     * The API instance is cached because it owns the HTTP client, its cookie jar and the
+     * discovered interface family. Building a fresh instance per call discarded the session
+     * cookie right after login, so every data request came back unauthenticated.
+     */
+    private val active = AtomicReference<CacheEntry?>()
+
     data class Selection(
         val host: String,
         val demoScenario: MockRouterApi.Scenario?,
@@ -33,21 +40,38 @@ class RouterApiFactory(
             .use { RouterRoutesConfig.parse(it.readText()) }
     }.getOrDefault(RouterRoutesConfig.EMPTY)
 
+    /** Reusing the live instance for the same selection; a new selection rebuilds it. */
+    private data class CacheEntry(
+        val selection: Selection,
+        val config: RouterRoutesConfig,
+        val api: com.zltm90plus.app.data.remote.RouterApiProtocol,
+    )
+
     fun configure(host: String, demoScenario: MockRouterApi.Scenario? = null) {
-        selection.set(Selection(host.trim().ifBlank { DEFAULT_ROUTER_HOST }, demoScenario))
+        val next = Selection(host.trim().ifBlank { DEFAULT_ROUTER_HOST }, demoScenario)
+        if (selection.getAndSet(next) != next) active.set(null)
     }
 
     fun create(): com.zltm90plus.app.data.remote.RouterApiProtocol {
         val current = selection.get() ?: Selection(DEFAULT_ROUTER_HOST, null)
-        return if (current.demoScenario != null) {
+        active.get()?.takeIf { it.selection == current }?.let { return it.api }
+
+        val config = loadRoutesConfig()
+        val api = if (current.demoScenario != null) {
             MockRouterApi(scenario = current.demoScenario)
         } else {
             ZltRouterApi(
-                config = loadRoutesConfig(),
+                config = config,
                 sessionStore = sessionStore,
                 hostProvider = { current.host },
             )
         }
+        active.set(CacheEntry(current, config, api))
+        return api
     }
+
+    /** Drops the cached client so the next call re-reads routes and re-detects the interface. */
+    fun invalidate() = active.set(null)
+
     fun host(): String = selection.get()?.host ?: DEFAULT_ROUTER_HOST
 }

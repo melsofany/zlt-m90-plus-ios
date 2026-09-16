@@ -135,6 +135,11 @@ class MockRouterApi(
         return scenario != Scenario.NO_INTERNET && scenario != Scenario.NO_CELLULAR && scenario != Scenario.UNREACHABLE
     }
 
+    override suspend fun probeWebInterface(): Boolean {
+        delay(latencyMillis)
+        return scenario != Scenario.UNREACHABLE
+    }
+
     private suspend fun failIfUnreachable() {
         delay(latencyMillis)
         if (scenario == Scenario.UNREACHABLE) throw RouterError.DeviceNotFound("mock")

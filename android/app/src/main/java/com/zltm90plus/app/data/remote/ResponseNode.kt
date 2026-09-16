@@ -23,25 +23,42 @@ class ResponseNode private constructor(
     /**
      * Finds the first value matching any alias, searching breadth-first so top-level keys win
      * over same-named keys buried deeper in the payload.
+     *
+     * A key that exists but carries an empty value is not treated as a match while a later alias
+     * still has data. ZLT firmware routinely includes fields it never fills in — `wan_connect_status`
+     * comes back as `""` on the M90 Plus while `ppp_status` holds the real state — and returning
+     * the empty field first would hide a value the device actually reported.
      */
     fun find(aliases: List<String>): ResponseNode? {
         if (aliases.isEmpty()) return null
         val normalized = aliases.map { normalizeKey(it) }
         var frontier = listOf(this)
+        var blankMatch: ResponseNode? = null
         repeat(MAX_SEARCH_DEPTH) {
             val next = mutableListOf<ResponseNode>()
             for (node in frontier) {
                 node.objectValues?.forEach { (key, value) ->
-                    if (normalizeKey(key) in normalized) return value
+                    if (normalizeKey(key) in normalized) {
+                        if (value.hasContent) return value
+                        if (blankMatch == null) blankMatch = value
+                    }
                     next += value
                 }
                 node.arrayValues?.forEach { next += it }
             }
-            if (next.isEmpty()) return null
+            if (next.isEmpty()) return blankMatch
             frontier = next
         }
-        return null
+        return blankMatch
     }
+
+    /** True when this node holds something other than an empty scalar. */
+    private val hasContent: Boolean
+        get() = when {
+            objectValues != null -> objectValues.isNotEmpty()
+            arrayValues != null -> arrayValues.isNotEmpty()
+            else -> !scalar.isNullOrBlank()
+        }
 
     fun findInt(aliases: List<String>): Int? {
         val node = find(aliases) ?: return null
@@ -56,7 +73,7 @@ class ResponseNode private constructor(
     }
 
     fun findString(aliases: List<String>): String? =
-        find(aliases)?.scalar?.takeIf { it.isNotBlank() }
+        find(aliases)?.scalar?.trim()?.takeIf { it.isNotBlank() && !isUnavailablePlaceholder(it) }
 
     fun findBoolean(aliases: List<String>, config: RouterRoutesConfig): Boolean? {
         val node = find(aliases) ?: return null
@@ -70,6 +87,13 @@ class ResponseNode private constructor(
     fun findArray(aliases: List<String>): List<ResponseNode>? {
         val node = find(aliases) ?: return null
         if (node.isArray) return node.arrayItems
+        // goform serialises list fields as JSON text inside the JSON value, so
+        // "station_list":"[{...},{...}]" has to be parsed a second time.
+        node.scalar?.trim()?.takeIf { it.startsWith("[") }?.let { embedded ->
+            ResponseNode.ofJson(embedded)?.let { parsed ->
+                if (parsed.isArray) return parsed.arrayItems
+            }
+        }
         // Some firmware wraps a single client object in an object keyed by MAC.
         if (node.isObject && node.objectMap.values.all { it.isObject }) return node.objectMap.values.toList()
         return null
@@ -109,7 +133,7 @@ class ResponseNode private constructor(
                 arrayValues = null,
                 scalar = trimmed,
                 numeric = parseFlexibleDouble(trimmed),
-                boolean = parseFlexibleBool(trimmed),
+                boolean = trimmed.takeIf { !isUnavailablePlaceholder(it) }?.let(::parseFlexibleBool),
             )
         }
 
@@ -138,17 +162,41 @@ class ResponseNode private constructor(
 
 internal fun normalizeKey(key: String): String = key.trim().lowercase()
 
+/**
+ * The firmware's own way of saying "no value". The reference device answers `-` for fields it
+ * cannot read (negotiation mode, MSISDN on some SIMs), and that must reach the UI as unavailable
+ * rather than being rendered as a real reading.
+ */
+internal fun isUnavailablePlaceholder(value: String): Boolean =
+    value.trim().lowercase() in setOf("-", "--", "n/a", "na", "null", "none", "unknown", "undefined")
+
 internal fun normalizeScalar(value: String?): String? = value?.trim()?.lowercase()
 
 internal fun parseFlexibleBool(raw: String?): Boolean? {
     val cleaned = normalizeScalar(raw) ?: return null
     if (cleaned.isEmpty()) return null
-    return when (cleaned) {
-        "1", "true", "yes", "on", "charging", "connected", "registered" -> true
-        "0", "false", "no", "off", "not_charging", "disconnected", "unregistered" -> false
+    return when {
+        // Exact tokens first: "0" and "off" are unambiguous.
+        cleaned in TRUE_TOKENS -> true
+        cleaned in FALSE_TOKENS -> false
+        // Firmware uses compound states such as "ppp_connected" and "modem_init_complete",
+        // so a negative form has to be checked before the bare word it contains.
+        DISCONNECTED_MARKERS.any { cleaned.contains(it) } -> false
+        CONNECTED_MARKERS.any { cleaned.contains(it) } -> true
         else -> null
     }
 }
+
+private val TRUE_TOKENS = setOf("1", "true", "yes", "on", "enable", "enabled", "ok")
+private val FALSE_TOKENS = setOf("0", "false", "no", "off", "disable", "disabled")
+
+private val CONNECTED_MARKERS = listOf(
+    "connected", "registered", "charging", "attached", "online", "success", "active", "complete",
+)
+private val DISCONNECTED_MARKERS = listOf(
+    "disconnect", "unconnect", "not_connect", "not_registered", "unregistered",
+    "not_charging", "discharg", "inactive", "fail", "offline",
+)
 
 internal fun parseFlexibleInt(raw: String): Int? {
     val cleaned = raw.trim().removeSuffix("%").replace(",", "")

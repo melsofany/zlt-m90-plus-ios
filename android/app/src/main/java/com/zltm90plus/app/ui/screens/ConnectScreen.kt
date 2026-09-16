@@ -153,11 +153,19 @@ fun ConnectScreen(
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(
                     onClick = onDiscover,
+                    enabled = !state.isDiscovering,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Icon(Icons.Default.Search, null, modifier = Modifier.size(18.dp))
+                    if (state.isDiscovering) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(Icons.Default.Search, null, modifier = Modifier.size(18.dp))
+                    }
                     Spacer(Modifier.size(8.dp))
-                    Text("اكتشاف الجهاز تلقائيًا")
+                    Text(if (state.isDiscovering) "جاري البحث…" else "اكتشاف الجهاز تلقائيًا")
                 }
             }
 

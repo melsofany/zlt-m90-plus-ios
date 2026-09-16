@@ -40,6 +40,22 @@ Strict layering: `ui/screens` (Compose) → `ui/MainViewModel` (state) → `data
 4. Everything is Arabic and RTL (`android:supportsRtl="true"`); never rely on colour alone — pair it with an icon and text.
 5. Impactful actions (Wi-Fi change, reboot) require a confirmation dialog and are disabled in demo mode.
 
+## Router protocol notes
+
+- The M90 Plus speaks GoAhead goform, not the LuCI REST API the scaffold assumed. Reads are
+  `goform_get_cmd_process?cmd=a,b,c` with a multi-field JSON reply; writes are
+  `goform_set_cmd_process` with a `goformId`.
+- **The goform login password is Base64-encoded.** Posting it in clear text is answered with the
+  same `{"result":"3"}` the firmware uses for a genuinely wrong password, so a correct password
+  looks rejected. `goform.loginPasswordEncoding` in `router_routes.json` controls this and
+  defaults to `base64`.
+- A login body needs `isTest=false` and `goformId=LOGIN`, and the `Referer` header must be set or
+  the firmware ignores the request.
+- `loginfo` is the honest "am I logged in" flag. Confirm it after logging in.
+- Uptime `realtime_time` is in **seconds**; `readUptimeMinutes` does the conversion.
+- Prefer `ppp_status` over `wan_connect_status`: the latter can be present but empty, and an empty
+  key must not mask a populated alias.
+
 ## Testing notes
 
 - Robolectric Compose tests render a small viewport, so call `performScrollTo()` before `assertIsDisplayed()` on anything below the fold.

@@ -60,8 +60,20 @@ fun SettingsScreen(
     ) {
         SectionCard(title = "معلومات الجهاز") {
             val info = state.snapshot?.deviceInfo
-            InfoRow(label = "الموديل", value = info?.model ?: "غير متاح")
-            InfoRow(label = "إصدار Firmware", value = info?.firmwareVersion ?: "غير متاح")
+            InfoRow(label = "الموديل", value = info?.model ?: "غير متاح من الجهاز")
+            InfoRow(label = "إصدار Firmware", value = info?.firmwareVersion ?: "غير متاح من الجهاز")
+            // These come straight from the firmware, so they carry the "from the device" label
+            // rather than the app's own estimate.
+            InfoRow(
+                label = "الإصدار العتادي (حسب الجهاز)",
+                value = info?.hardwareVersion ?: "غير متاح من الجهاز",
+            )
+            InfoRow(label = "IMEI (حسب الجهاز)", value = info?.imei ?: "غير متاح من الجهاز")
+            InfoRow(
+                label = "مدة التشغيل (حسب الجهاز)",
+                value = info?.uptimeMinutes?.let { ArabicFormat.duration(it.toInt()) }
+                    ?: "غير متاحة من الجهاز",
+            )
             InfoRow(label = "العنوان المُعد", value = state.loginForm.host)
             state.lastRefreshMillis?.let {
                 InfoRow(label = "آخر تحديث ناجح", value = ArabicFormat.relativeTime(it))

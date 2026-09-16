@@ -27,18 +27,30 @@ object ResponseParser {
         }
     }
 
-    /** Extracts the token from a `Set-Cookie` style header without logging its value. */
-    fun extractSessionToken(headers: Map<String, List<String>>): String? {
-        val cookieHeader = headers.entries
-            .firstOrNull { it.key.equals("Set-Cookie", ignoreCase = true) }
-            ?.value
-            ?.joinToString(";")
-            ?: return null
-        return cookieHeader.split(";")
-            .map { it.trim() }
-            .firstOrNull { it.contains("=") && !it.startsWith("Path", ignoreCase = true) }
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
+    /** Extracts the session cookie from `Set-Cookie` headers without logging its value. */
+    fun extractSessionToken(headers: Map<String, List<String>>): String? =
+        extractSessionCookie(headers)
+
+    /**
+     * Builds a valid `Cookie:` header value from `Set-Cookie` response headers.
+     *
+     * The previous implementation returned the whole `Set-Cookie` string, attributes included
+     * (`sysauth=abc; path=/; HttpOnly`). That is not a legal request header, and a router that
+     * validates its session cookie rejects it, so every authenticated request after login failed.
+     * Only the `name=value` pairs are kept here, joined with `; `.
+     */
+    fun extractSessionCookie(headers: Map<String, List<String>>): String? {
+        val cookieHeaders = headers.entries
+            .filter { it.key.equals("Set-Cookie", ignoreCase = true) }
+            .flatMap { it.value }
+        if (cookieHeaders.isEmpty()) return null
+
+        val pairs = cookieHeaders.mapNotNull { header ->
+            val pair = header.split(";").first().trim()
+            val name = pair.substringBefore('=', missingDelimiterValue = "").trim()
+            if (pair.contains('=') && name.isNotEmpty() && !name.startsWith("$")) pair else null
+        }
+        return pairs.takeIf { it.isNotEmpty() }?.joinToString("; ")
     }
 
     private fun parseXml(xml: String): ResponseNode? = runCatching {

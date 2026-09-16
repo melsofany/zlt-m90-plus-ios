@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "_comment": "مسارات Firmware جهاز ZLT M90 Plus. عدّل هذا الملف فقط عند ربط جهاز حقيقي. التقط الطلبات من لوحة إدارة الجهاز في المتصفح ثم انسخ المسارات وأسماء الحقول هنا. لا تضع كلمات مرور أو رموز جلسة في هذا الملف.",
+  "version": 2,
+  "_comment": "مسارات Firmware جهاز ZLT M90 Plus. عدّل هذا الملف فقط عند ربط جهاز حقيقي. لا تضع كلمات مرور أو رموز جلسة في هذا الملف.",
   "requestTimeoutSeconds": 12,
   "connectTimeoutSeconds": 8,
   "encoding": "json",
@@ -8,7 +8,60 @@
     "url": "http://connectivitycheck.gstatic.com/generate_204",
     "expectedStatus": 204
   },
+  "protocols": {
+    "_comment": "عائلات واجهة الجهاز. goform هي واجهة ZLT M90 Plus الفعلية، و luci بديل احتياطي للإصدارات الأقدم. عند إضافة اسم آخر يجب إضافة دعمه في الكود.",
+    "order": [
+      "goform",
+      "luci"
+    ]
+  },
+  "goform": {
+    "_comment": "واجهة GoAhead/ZTE-Tozed: قراءة عبر goform_get_cmd_process وكتابة عبر goform_set_cmd_process. رموز النجاح 0 و4 تعني نجاح تسجيل الدخول، و3 تعني كلمة مرور خاطئة.",
+    "getPath": "/goform/goform_get_cmd_process",
+    "setPath": "/goform/goform_set_cmd_process",
+    "sessionCheckCmd": "loginfo",
+    "sessionOkValue": "ok",
+    "loginGoformId": "LOGIN",
+    "logoutGoformId": "LOGOUT",
+    "loginUserField": "user",
+    "loginPasswordField": "password",
+    "loginPasswordEncoding": "base64",
+    "username": "admin",
+    "successResultCodes": [
+      "0",
+      "4"
+    ],
+    "wrongPasswordResultCodes": [
+      "3"
+    ],
+    "sessionTokenAliases": [
+      "stok",
+      "token",
+      "sessionid",
+      "sysauth"
+    ],
+    "commands": {
+      "deviceInfo": "imei,imsi,iccid,msisdn,cr_version,wa_inner_version,hardware_version,mac_address,lan_ipaddr,wan_ipaddr,network_type,network_provider,wifi_cur_state,realtime_time",
+      "battery": "battery_value,battery_charging,battery_vol_percent,battery_pers",
+      "network": "network_type,network_provider,ppp_status,modem_main_state,signalbar,network_signalbar,rssi,lte_rsrp,Z5g_rsrp,lte_rsrq,lte_snr,sinr,lan_ipaddr,wan_ipaddr,wan_connect_status,wifi_access_sta_num",
+      "dataUsage": "monthly_tx_bytes,monthly_rx_bytes,realtime_tx_bytes,realtime_rx_bytes,realtime_time,data_volume_limit_size,data_volume_limit_unit,data_volume_limit_switch,data_volume_alert_percent,monthly_time",
+      "connectedDevices": "station_list,lan_station_list"
+    },
+    "writes": {
+      "updateWifi": {
+        "goformId": "SET_WIFI_SSID1_SETTINGS",
+        "fields": {
+          "ssid": "{ssid}",
+          "passphrase": "{password}"
+        }
+      },
+      "restartRouter": {
+        "goformId": "REBOOT_DEVICE"
+      }
+    }
+  },
   "routes": {
+    "_comment": "مسارات LuCI القديمة، تُستخدم فقط إن لم يستجب goform.",
     "login": {
       "path": "/cgi-bin/luci/api/xqsystem/login",
       "method": "POST",
@@ -16,8 +69,18 @@
         "username": "{username}",
         "password": "{password}"
       },
-      "successIndicators": ["token", "stok", "success", "ok"],
-      "failureIndicators": ["error", "invalid", "denied", "forbidden"]
+      "successIndicators": [
+        "token",
+        "stok",
+        "success",
+        "ok"
+      ],
+      "failureIndicators": [
+        "error",
+        "invalid",
+        "denied",
+        "forbidden"
+      ]
     },
     "deviceInfo": {
       "path": "/cgi-bin/luci/api/xqsystem/router_info",
@@ -53,42 +116,254 @@
     }
   },
   "fields": {
-    "batteryPercent": ["battery_percent", "batteryLevel", "battery_percentage", "battery", "power_percent", "charge", "percent"],
-    "batteryCharging": ["charging", "is_charging", "charge_status", "charging_status", "battery_status"],
-    "batteryRemainingMinutes": ["battery_remaining_minutes", "remaining_time", "battery_remain_time", "time_remaining"],
-    "batteryVoltage": ["voltage", "battery_voltage", "vbatt"],
-    "batteryTemperature": ["temperature", "battery_temperature", "temp"],
-
-    "carrierName": ["operator", "operator_name", "carrier", "isp", "network_operator", "spn"],
-    "networkType": ["network_type", "net_type", "rat", "access_technology", "wan_type"],
-    "signalPercent": ["signal_percent", "signal", "signal_strength", "rsrp_percent", "csq"],
-    "signalDbm": ["rssi", "rsrp", "dbm", "signal_dbm"],
-    "signalLevel": ["signal_level", "level", "bars"],
-    "localIp": ["local_ip", "lan_ip", "ip", "ip_address"],
-    "uptimeMinutes": ["uptime_minutes", "uptime", "connection_duration", "conn_time"],
-    "internetConnected": ["internet", "internet_connected", "wan_connected", "connected", "network_status"],
-    "cellularRegistered": ["cellular_registered", "registered", "sim_status", "sim_state", "card_status"],
-
-    "planTotalBytes": ["total_bytes", "data_total", "plan_total", "quota_total", "total_traffic"],
-    "planUsedBytes": ["used_bytes", "data_used", "plan_used", "quota_used", "used_traffic"],
-    "planRenewal": ["renewal_date", "expire_time", "expiry_date", "next_reset", "renewal"],
-
-    "deviceList": ["device_list", "devices", "clients", "client_list", "hosts", "stations"],
-    "deviceHostname": ["hostname", "name", "host_name", "device_name", "alias"],
-    "deviceMac": ["mac", "mac_address", "macaddr", "hwaddr"],
-    "deviceIp": ["ip", "ip_address", "ipaddr", "addr"],
-    "deviceType": ["type", "connection_type", "iface", "band"],
-
-    "deviceModel": ["model", "device_model", "product", "board"],
-    "firmwareVersion": ["firmware", "firmware_version", "version", "fwver", "rom_version"],
-    "hardwareVersion": ["hardware", "hardware_version", "hwver"],
-    "imei": ["imei", "imei_number"],
-    "serialNumber": ["sn", "serial", "serial_number"],
-    "wifiSsid": ["ssid", "wifi_ssid", "wl_ssid"],
-    "wanIp": ["wan_ip", "wan_ip_address", "public_ip", "external_ip"]
+    "batteryCharging": [
+      "battery_charging",
+      "charging",
+      "is_charging",
+      "charge_status",
+      "charging_status",
+      "battery_status"
+    ],
+    "batteryHealth": [
+      "battery_pers",
+      "battery_health"
+    ],
+    "batteryPercent": [
+      "battery_value",
+      "battery_vol_percent",
+      "battery_percent",
+      "batteryLevel",
+      "battery_percentage",
+      "battery",
+      "power_percent",
+      "charge",
+      "percent"
+    ],
+    "batteryRemainingMinutes": [
+      "battery_remaining_minutes",
+      "remaining_time",
+      "battery_remain_time",
+      "time_remaining"
+    ],
+    "batteryTemperature": [
+      "temperature",
+      "battery_temperature",
+      "temp"
+    ],
+    "batteryVoltage": [
+      "voltage",
+      "battery_voltage",
+      "vbatt"
+    ],
+    "carrierName": [
+      "network_provider",
+      "spn_name_data",
+      "operator",
+      "operator_name",
+      "carrier",
+      "isp",
+      "network_operator",
+      "spn"
+    ],
+    "cellularRegistered": [
+      "modem_main_state",
+      "cellular_registered",
+      "registered",
+      "sim_status",
+      "sim_state",
+      "card_status"
+    ],
+    "connectedCount": [
+      "wifi_access_sta_num",
+      "wifi_access_sta_total",
+      "station_num"
+    ],
+    "deviceHostname": [
+      "hostname",
+      "host_name",
+      "device_name",
+      "alias",
+      "name"
+    ],
+    "deviceIp": [
+      "ip",
+      "ip_address",
+      "ipaddr",
+      "addr"
+    ],
+    "deviceList": [
+      "station_list",
+      "lan_station_list",
+      "device_list",
+      "devices",
+      "clients",
+      "client_list",
+      "hosts",
+      "stations"
+    ],
+    "deviceMac": [
+      "mac",
+      "mac_address",
+      "macaddr",
+      "hwaddr",
+      "station_mac"
+    ],
+    "deviceModel": [
+      "model",
+      "device_model",
+      "product",
+      "board"
+    ],
+    "deviceType": [
+      "type",
+      "connection_type",
+      "iface",
+      "band"
+    ],
+    "firmwareVersion": [
+      "cr_version",
+      "wa_inner_version",
+      "firmware",
+      "firmware_version",
+      "version",
+      "fwver",
+      "rom_version"
+    ],
+    "hardwareVersion": [
+      "hardware_version",
+      "hardware",
+      "hwver"
+    ],
+    "imei": [
+      "imei",
+      "imei_number"
+    ],
+    "internetConnected": [
+      "wan_connect_status",
+      "ppp_status",
+      "internet",
+      "internet_connected",
+      "wan_connected",
+      "connected",
+      "network_status"
+    ],
+    "localIp": [
+      "lan_ipaddr",
+      "local_ip",
+      "lan_ip",
+      "ip",
+      "ip_address"
+    ],
+    "networkType": [
+      "network_type",
+      "net_type",
+      "rat",
+      "access_technology",
+      "wan_type"
+    ],
+    "planRenewal": [
+      "renewal_date",
+      "expire_time",
+      "expiry_date",
+      "next_reset",
+      "renewal"
+    ],
+    "planStart": [
+      "monthly_time",
+      "plan_start"
+    ],
+    "planTotalBytes": [
+      "data_volume_limit_size",
+      "total_bytes",
+      "data_total",
+      "plan_total",
+      "quota_total",
+      "total_traffic"
+    ],
+    "planTotalUnit": [
+      "data_volume_limit_unit",
+      "total_unit",
+      "plan_total_unit"
+    ],
+    "planUsedRxBytes": [
+      "monthly_rx_bytes"
+    ],
+    "planUsedTxBytes": [
+      "monthly_tx_bytes"
+    ],
+    "serialNumber": [
+      "sn",
+      "serial",
+      "serial_number"
+    ],
+    "signalDbm": [
+      "lte_rsrp",
+      "Z5g_rsrp",
+      "rssi",
+      "rsrp",
+      "dbm",
+      "signal_dbm"
+    ],
+    "signalLevel": [
+      "signal_level",
+      "level",
+      "bars"
+    ],
+    "signalPercent": [
+      "network_signalbar",
+      "signalbar",
+      "signal_percent",
+      "signal",
+      "signal_strength",
+      "rsrp_percent",
+      "csq"
+    ],
+    "uptimeMinutes": [
+      "uptime_minutes",
+      "uptime",
+      "connection_duration",
+      "conn_time",
+      "monthly_time"
+    ],
+    "uptimeSeconds": [
+      "realtime_time",
+      "uptime_seconds",
+      "conn_time_sec",
+      "sys_uptime_seconds",
+      "runtime"
+    ],
+    "wanIp": [
+      "wan_ipaddr",
+      "wan_ip",
+      "wan_ip_address",
+      "public_ip",
+      "external_ip"
+    ],
+    "wifiSsid": [
+      "ssid",
+      "wifi_ssid",
+      "wl_ssid"
+    ]
   },
   "genericAliases": {
-    "true": ["1", "true", "yes", "on", "connected", "registered", "charging"],
-    "false": ["0", "false", "no", "off", "disconnected", "unregistered", "not_charging"]
+    "true": [
+      "1",
+      "true",
+      "yes",
+      "on",
+      "connected",
+      "registered",
+      "charging",
+      "ipv4_connected"
+    ],
+    "false": [
+      "0",
+      "false",
+      "no",
+      "off",
+      "disconnected",
+      "unregistered",
+      "not_charging"
+    ]
   }
 }
