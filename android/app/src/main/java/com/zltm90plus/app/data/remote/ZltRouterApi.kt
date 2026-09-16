@@ -838,14 +838,22 @@ class ZltRouterApi(
         // is not one this device serves.
         for (script in RouterLoginPage.scriptSources(html)) {
             val source = fetchText(base, script) ?: continue
+            val found = RouterLoginPage.endpointsInBundle(source)
+            // The bundle is megabytes of minified framework, so the log gets what matters — the
+            // paths found, and a bounded excerpt to show how they are written — rather than a file
+            // nobody can read.
             Diagnostics.recordProbe(
                 url = RouterUrl.build(base, script).toString(),
                 reachable = true,
-                detail = "نص الملف: ${source.length} حرفًا",
+                detail = if (found.isEmpty()) {
+                    "لا يوجد مسار في هذا الملف (${source.length} حرفًا)"
+                } else {
+                    "المسارات: ${found.joinToString(", ")}"
+                },
                 durationMillis = 0,
-                page = source,
+                page = source.take(EXCERPT_LIMIT),
             )
-            val endpoint = RouterLoginPage.endpointsInBundle(source).firstOrNull()?.let { path ->
+            val endpoint = found.firstOrNull()?.let { path ->
                 RouterLoginPage.parse(source, defaults)?.copy(path = path)
                     ?: defaults.let { RouterLoginPage.Endpoint(path, it.userField, it.passwordField, false) }
             }
@@ -1053,6 +1061,9 @@ class ZltRouterApi(
          * partial script would risk cutting the endpoint string in half.
          */
         private const val BUNDLE_LIMIT = 8L * 1024L * 1024L
+
+        /** How much of a bundle the diagnostics log keeps, enough to see how paths are written. */
+        private const val EXCERPT_LIMIT = 4_000
         private val TOKEN_ALIASES = listOf("token", "stok", "session", "sessionid", "key")
         private val RESULT_ALIASES = listOf("result")
 
