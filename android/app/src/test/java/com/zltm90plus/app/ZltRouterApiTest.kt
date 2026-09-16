@@ -107,6 +107,67 @@ class ZltRouterApiTest {
         assertTrue("expected InvalidCredentials but was $error", error is RouterError.InvalidCredentials)
     }
 
+    /**
+     * The field failure this fix exists for.
+     *
+     * The log showed `ProtocolException: Unexpected status line:
+     * /goform/goform_set_cmd_process HTTP/1.1 301 Moved Permanently` reported as
+     * "حدث خطأ مؤقت. يمكنك إعادة المحاولة." — advice that cannot work, because the same request
+     * provokes the same answer. The device did reply, so this must be named as an unreadable reply
+     * rather than as a transient fault.
+     */
+    @Test
+    fun `a status line that echoes the request is reported as an unreadable reply`() = runTest {
+        server.echoRequestLineAsStatus = true
+
+        val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
+
+        assertTrue(
+            "a device that answered must not be reported as a temporary failure, got: $error",
+            error is RouterError.DeviceResponseUnreadable,
+        )
+        assertTrue(
+            "the reason must be carried for the log, got: ${(error as RouterError?)?.technicalDetail}",
+            (error as RouterError?)?.technicalDetail?.contains("Unexpected status line") == true,
+        )
+    }
+
+    /**
+     * The other half of the field failure: discovery saw a redirect on `GET /` and switched the
+     * whole app to https, where this firmware answers every API path with 404. A preference for
+     * https must not become a dead end when only http serves the interface.
+     */
+    @Test
+    fun `login falls back to http when the preferred https scheme has no interface`() = runTest {
+        // The fake answers the API over http; asking it to serve https is what the 404 stands in
+        // for, so a client that must start on https is pointed at a scheme that cannot work.
+        val httpsOnly = ZltRouterApi(
+            config = RouterRoutesConfig.parse(routesJson),
+            sessionStore = session,
+            hostProvider = { "${server.host}:${server.port}" },
+            schemeProvider = { "https" },
+        )
+
+        val error = runCatching { httpsOnly.login("admin", "admin") }.exceptionOrNull()
+
+        assertNull(
+            "the client must try http after https fails, not report a failure: $error",
+            error,
+        )
+        assertEquals("the login must have reached the device", 1, server.loginAttempts.get())
+    }
+
+    @Test
+    fun `the scheme that logged in is the one used for later reads`() = runTest {
+        val api = api()
+        api.login("admin", "admin")
+        api.fetchBatteryStatus()
+
+        // The fake only speaks http, so a read that succeeded proves the resolved scheme was
+        // carried past login rather than recomputed from the caller's preference.
+        assertEquals(0, server.queriesWithoutSession.get())
+    }
+
     @Test
     fun `queries after login carry the session cookie`() = runTest {
         val api = api()

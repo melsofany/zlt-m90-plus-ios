@@ -164,19 +164,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // has its own actionable message, so it refines an unreachable result rather
                 // than blocking the attempt up front (a LAN adapter or VPN makes the platform's
                 // Wi-Fi flag unreliable).
-                val phase = if (!presence.connectedToWifi && error.isUnreachable()) {
-                    ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK
-                } else {
-                    mapError(error)
+                val phase = when {
+                    // A phone on a different subnet than the device has no route to it, and the
+                    // resulting timeout is indistinguishable from a broken device. This check
+                    // names it instead, which is the difference between "check the device" and
+                    // "join the right network".
+                    !presence.connectedToWifi && error.isUnreachable() ->
+                        ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK
+
+                    error.isUnreachable() &&
+                        !LocalNetworkChecker.isPlausiblyLocal(form.host, presence.localIpv4) ->
+                        ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK
+
+                    else -> mapError(error)
+                }
+                val userMessage = when {
+                    phase == ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK &&
+                        presence.connectedToWifi ->
+                        RouterError.WrongNetwork(form.host, presence.localIpv4).userMessage
+
+                    phase == ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK ->
+                        RouterError.PhoneNotConnectedToDeviceNetwork().userMessage
+
+                    else -> (error as? RouterError)?.userMessage ?: "تعذر الاتصال بالجهاز. حاول مرة أخرى."
                 }
                 _state.update {
                     it.copy(
                         phase = phase,
-                        userMessage = if (phase == ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK) {
-                            RouterError.PhoneNotConnectedToDeviceNetwork().userMessage
-                        } else {
-                            (error as? RouterError)?.userMessage ?: "تعذر الاتصال بالجهاز. حاول مرة أخرى."
-                        },
+                        userMessage = userMessage,
                         technicalDetail = (error as? RouterError)?.technicalDetail,
                     )
                 }
@@ -396,8 +411,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun mapError(error: Throwable): ConnectionPhase = when (error) {
         is RouterError.InvalidCredentials -> ConnectionPhase.INVALID_CREDENTIALS
         is RouterError.DeviceNotFound, is RouterError.InvalidHost -> ConnectionPhase.DEVICE_NOT_FOUND
-        is RouterError.PhoneNotConnectedToDeviceNetwork -> ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK
+        is RouterError.WrongNetwork, is RouterError.PhoneNotConnectedToDeviceNetwork ->
+            ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK
         is RouterError.UnsupportedFirmware -> ConnectionPhase.UNSUPPORTED_FIRMWARE
+        is RouterError.DeviceResponseUnreadable -> ConnectionPhase.DEVICE_NOT_FOUND
         is RouterError.SessionExpired -> ConnectionPhase.SESSION_EXPIRED
         is RouterError.Timeout, is RouterError.TemporaryFailure -> ConnectionPhase.TEMPORARY_FAILURE
         is RouterError.FeatureNotSupported -> ConnectionPhase.UNSUPPORTED_FIRMWARE

@@ -16,6 +16,14 @@ data class DiagnosticExchange(
     val responseBody: String?,
     val error: String?,
     val durationMillis: Long,
+    /**
+     * The `Location` header of a redirect, kept separately from the body.
+     *
+     * A redirect body is usually an empty HTML stub, so without this the log showed "HTTP 301" and
+     * nothing about where the device wanted the request to go — the single most useful fact when
+     * the client and the firmware disagree about a URL or a scheme.
+     */
+    val redirectLocation: String? = null,
 )
 
 /**

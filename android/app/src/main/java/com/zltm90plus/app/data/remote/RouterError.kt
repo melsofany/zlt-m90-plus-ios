@@ -22,6 +22,35 @@ sealed class RouterError(
     class InvalidCredentials :
         RouterError("اسم المستخدم أو كلمة المرور غير صحيحة.")
 
+    /**
+     * The device answered, but not with HTTP this client can use: a status line that is not a
+     * status line, or a redirect that goes somewhere unsafe to follow.
+     *
+     * Kept apart from [TemporaryFailure] on purpose. Retrying cannot help — the same request will
+     * produce the same answer — and telling the user "حدث خطأ مؤقت، أعد المحاولة" is what turned a
+     * device that was clearly replying into what looked like a network fault.
+     */
+    class DeviceResponseUnreadable(detail: String? = null) :
+        RouterError(
+            "ردّ الجهاز باستجابة غير مفهومة، ولم يُكمل التطبيق الطلب. السجل أدناه يوضح ما ردّ به الجهاز.",
+            detail,
+        )
+
+    /**
+     * The phone is on a Wi-Fi network, but not the one the device is on.
+     *
+     * This is the failure the first field log actually showed: every request timed out, and the
+     * app reported "الجهاز لم يستجب" when the request had never had a route to the device at all.
+     * Naming the two addresses is what makes it actionable.
+     */
+    class WrongNetwork(val deviceHost: String, val phoneAddress: String?) :
+        RouterError(
+            "هاتفك متصل بشبكة Wi-Fi مختلفة عن شبكة الجهاز. " +
+                "عنوان الجهاز $deviceHost بينما هاتفك على ${phoneAddress ?: "شبكة أخرى"}، " +
+                "وهما شبكتان مختلفتان. اتصل بشبكة الجهاز نفسه ثم أعد المحاولة.",
+            technicalDetail = "device=$deviceHost phone=$phoneAddress",
+        )
+
     class SessionExpired :
         RouterError("انتهت الجلسة. يرجى تسجيل الدخول مرة أخرى.")
 

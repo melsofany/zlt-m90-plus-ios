@@ -50,6 +50,7 @@ object DiagnosticLog : DiagnosticsSink {
             appendLine("الوقت: ${exchange.timestampMillis}")
             appendLine("المدة: ${exchange.durationMillis} م.ث")
             exchange.statusCode?.let { appendLine("حالة HTTP: $it") }
+            exchange.redirectLocation?.let { appendLine("التحويل إلى: $it") }
             exchange.error?.let { appendLine("الخطأ: $it") }
             exchange.requestBody?.takeIf { it.isNotEmpty() }?.let { appendLine("الطلب: $it") }
             exchange.responseBody?.takeIf { it.isNotEmpty() }?.let { appendLine("الرد: $it") }

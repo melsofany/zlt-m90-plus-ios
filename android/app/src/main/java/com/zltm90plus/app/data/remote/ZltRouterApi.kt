@@ -78,35 +78,69 @@ class ZltRouterApi(
      * The one place a request URL is built. Validation happens here, so no other call site can
      * skip the private-host check or pick a scheme of its own.
      */
-    private fun baseUrl(): String = RouterUrl.base(hostProvider(), schemeProvider())
+    private fun baseUrl(): String = baseFor(null)
+
+    /** The same URL builder, pinned to one scheme for the duration of a login attempt. */
+    private fun baseFor(scheme: String?): String =
+        RouterUrl.base(hostProvider(), scheme ?: resolvedScheme ?: schemeProvider())
+
+    /**
+     * The scheme that actually answered, learned by [login]. Null until a login has succeeded.
+     *
+     * Discovery only ever sees `GET /`, and a device may redirect that one path to HTTPS while
+     * still serving its whole API over plain HTTP. Standing on that inference cost a real login:
+     * the app was pointed at https, where this firmware answers every API path with 404. So the
+     * probe's scheme is a starting preference, and the scheme that logs in is the one that counts.
+     */
+    @Volatile
+    private var resolvedScheme: String? = null
+
+    /** The preferred scheme first, then the other, so one wrong guess cannot block a connection. */
+    private fun schemeCandidates(): List<String> =
+        if (schemeProvider().equals("https", ignoreCase = true)) listOf("https", "http")
+        else listOf("http", "https")
 
     /** Set by [login]; stays [RouterProtocol.AUTO] until a family has been confirmed. */
     @Volatile
     private var protocol: RouterProtocol = RouterProtocol.AUTO
 
     override suspend fun login(username: String, password: String) = withContext(Dispatchers.IO) {
-        val attempts = config.protocolOrder.ifEmpty { DEFAULT_PROTOCOL_ORDER }
+        val interfaces = config.protocolOrder.ifEmpty { DEFAULT_PROTOCOL_ORDER }
         var lastError: Throwable? = null
 
-        for (candidate in attempts) {
-            try {
-                if (candidate == RouterRoutesConfig.GOFORM) {
-                    loginGoform(username, password)
-                    protocol = RouterProtocol.GOFORM
-                } else {
-                    loginLuci(username, password)
-                    protocol = RouterProtocol.LUCI
+        // Outer loop over schemes, inner over interface families: a device serving its admin only
+        // over HTTP would otherwise be missed whenever discovery happened to see a redirect.
+        for (scheme in schemeCandidates()) {
+            for (candidate in interfaces) {
+                try {
+                    if (candidate == RouterRoutesConfig.GOFORM) {
+                        loginGoform(username, password, scheme)
+                        protocol = RouterProtocol.GOFORM
+                    } else {
+                        loginLuci(username, password, scheme)
+                        protocol = RouterProtocol.LUCI
+                    }
+                    resolvedScheme = scheme
+                    return@withContext
+                } catch (error: RouterError.InvalidCredentials) {
+                    // The interface answered and rejected the credentials, so this is the right
+                    // family and the right scheme; trying the next one would only produce a second
+                    // false negative.
+                    throw error
+                } catch (error: RouterError.DeviceNotFound) {
+                    // Nothing is listening at all, so no other scheme or family will do better.
+                    // Kept separate from the branch below so an absent device costs one attempt
+                    // rather than four.
+                    throw error
+                } catch (error: Throwable) {
+                    // Anything else — a 404 on this scheme, a timeout, an unreadable answer — is
+                    // worth retrying on the other scheme, so it is kept and the search continues.
+                    // The most informative failure is the one reported, not merely the last: a
+                    // device that answered with something unreadable on http is a different
+                    // situation from the connect timeout https produces when it is not listening,
+                    // and reporting the timeout would hide the reply that actually happened.
+                    if (error.rank() >= (lastError?.rank() ?: Int.MIN_VALUE)) lastError = error
                 }
-                return@withContext
-            } catch (error: RouterError.InvalidCredentials) {
-                // The interface answered and rejected the credentials, so this is the right
-                // family; trying the next one would only produce a second false negative.
-                throw error
-            } catch (error: RouterError.DeviceNotFound) {
-                // Nothing is listening at all, so no other family will do better.
-                throw error
-            } catch (error: Throwable) {
-                lastError = error
             }
         }
 
@@ -285,7 +319,7 @@ class ZltRouterApi(
 
     // --- login per interface family -------------------------------------------------------
 
-    private fun loginGoform(username: String, password: String) {
+    private fun loginGoform(username: String, password: String, scheme: String) {
         val goform = config.goform
         val response = postForm(
             path = goform.setPath,
@@ -296,14 +330,19 @@ class ZltRouterApi(
                 goform.loginUserField to username.ifBlank { goform.username },
                 goform.loginPasswordField to encodePassword(password, goform.loginPasswordEncoding),
             ),
+            scheme = scheme,
         )
         response.use {
             val text = it.body?.string().orEmpty()
             if (!it.isSuccessful) {
-                throw if (it.code == 401 || it.code == 403) {
-                    RouterError.InvalidCredentials()
-                } else {
-                    RouterError.TemporaryFailure("HTTP ${it.code} (login)")
+                throw when {
+                    it.code == 401 || it.code == 403 -> RouterError.InvalidCredentials()
+                    // A redirect here means the write endpoint is not at this scheme or path.
+                    // Reported with the target so the log shows where the device pointed.
+                    it.code in 300..399 -> RouterError.DeviceResponseUnreadable(
+                        "HTTP ${it.code} (login) → ${it.header("Location") ?: "بلا عنوان تحويل"}",
+                    )
+                    else -> RouterError.TemporaryFailure("HTTP ${it.code} (login)")
                 }
             }
 
@@ -325,7 +364,7 @@ class ZltRouterApi(
             ResponseParser.extractSessionCookie(it.headers.toMultimap())?.let(session::saveToken)
                 ?: node.findString(clientSessionAliases())?.let(session::saveToken)
 
-            if (!goformSessionIsValid()) throw RouterError.InvalidCredentials()
+            if (!goformSessionIsValid(scheme)) throw RouterError.InvalidCredentials()
         }
     }
 
@@ -341,13 +380,13 @@ class ZltRouterApi(
             java.util.Base64.getEncoder().encodeToString(password.toByteArray(Charsets.UTF_8))
         }
 
-    private fun loginLuci(username: String, password: String) {
+    private fun loginLuci(username: String, password: String, scheme: String) {
         val route = config.route("login")
             ?: throw RouterError.UnsupportedFirmware("لم يُضبط مسار تسجيل الدخول في router_routes.json")
         val body = route.bodyTemplate.mapValues { (_, template) ->
             template.replace("{username}", username).replace("{password}", password)
         }
-        execute(route, body).use { response ->
+        execute(route, body, scheme).use { response ->
             val text = response.body?.string().orEmpty()
             ensureAuthResponse(response, text, route)
             val node = ResponseParser.parse(text, config.encoding)
@@ -359,8 +398,8 @@ class ZltRouterApi(
     }
 
     /** `loginfo` is the firmware's own "am I logged in" flag, so it is the honest confirmation. */
-    private fun goformSessionIsValid(): Boolean = runCatching {
-        getGoform(config.goform.sessionCheckCmd).use { response ->
+    private fun goformSessionIsValid(scheme: String): Boolean = runCatching {
+        getGoform(config.goform.sessionCheckCmd, scheme).use { response ->
             if (!response.isSuccessful) return false
             val node = ResponseParser.parse(response.body?.string().orEmpty(), config.encoding)
                 ?: return false
@@ -438,8 +477,8 @@ class ZltRouterApi(
      * goform reads are `cmd`-driven. `multi_data=1` is what makes the firmware answer with a JSON
      * object instead of a bare value, so it is always sent.
      */
-    private fun getGoform(cmd: String): Response {
-        val base = baseUrl()
+    private fun getGoform(cmd: String, scheme: String? = null): Response {
+        val base = baseFor(scheme)
         val url = RouterUrl.build(
             baseUrl = base,
             path = config.goform.getPath,
@@ -463,8 +502,8 @@ class ZltRouterApi(
         }
     }
 
-    private fun postForm(path: String, values: Map<String, String>): Response {
-        val base = baseUrl()
+    private fun postForm(path: String, values: Map<String, String>, scheme: String? = null): Response {
+        val base = baseFor(scheme)
         val body: RequestBody = FormBody.Builder()
             .apply { values.forEach { (key, value) -> add(key, value) } }
             .build()
@@ -481,6 +520,12 @@ class ZltRouterApi(
         // The firmware checks the referer on form posts and rejects requests that omit it.
         header("Referer", "$base/index.html")
         header("User-Agent", USER_AGENT)
+        // The device's GoAhead server has been observed answering a reused connection with a
+        // status line that begins with the request path instead of the HTTP version. Asking for a
+        // fresh connection each time avoids that desync, and this interface is a handful of
+        // requests per refresh on a LAN, so the handshake cost is irrelevant next to a reply the
+        // client cannot parse.
+        header("Connection", "close")
         session.token()?.let { token ->
             // A bare value is a token; a string containing '=' is already a cookie pair.
             header("Cookie", if (token.contains('=')) token else "stok=$token")
@@ -501,8 +546,9 @@ class ZltRouterApi(
     private fun execute(
         route: RouterRoutesConfig.Route,
         bodyValues: Map<String, String> = emptyMap(),
+        scheme: String? = null,
     ): Response {
-        val base = baseUrl()
+        val base = baseFor(scheme)
         val builder = Request.Builder().url(RouterUrl.build(base, route.path))
         if (route.method.uppercase() == "POST") {
             if (config.encoding == "json") {
@@ -537,6 +583,7 @@ class ZltRouterApi(
                     responseBody = text?.let(DiagnosticRedaction::redact),
                     error = null,
                     durationMillis = System.currentTimeMillis() - startedAt,
+                    redirectLocation = response.header("Location")?.let(DiagnosticRedaction::redact),
                 ),
             )
             response
@@ -595,10 +642,41 @@ class ZltRouterApi(
             throw RouterError.DeviceNotFound(e.message)
         } catch (e: ConnectException) {
             throw RouterError.DeviceNotFound(e.message)
+        } catch (e: java.net.ProtocolException) {
+            // The device answered, but with something that is not a valid HTTP status line. This
+            // firmware runs the GoAhead embedded server, which has been observed to answer a
+            // request line verbatim under connection reuse; the bytes on the wire were
+            // "/goform/goform_set_cmd_process HTTP/1.1 301 Moved Permanently". Calling that a
+            // temporary failure invited the user to retry a request that can only answer the same
+            // way, so it is reported as what it is: a reply this client cannot use.
+            throw RouterError.DeviceResponseUnreadable(e.message)
         } catch (e: IOException) {
+            // OkHttp wraps the same malformed reply, so the cause chain is checked before the
+            // error is dismissed as transient.
+            if (e.hasProtocolCause()) throw RouterError.DeviceResponseUnreadable(e.message)
             // Deliberately excludes the request body, which may carry credentials.
             throw RouterError.TemporaryFailure(e.javaClass.simpleName, e)
         }
+
+    /** True when anything in the cause chain is a malformed-reply error. */
+    private fun Throwable.hasProtocolCause(): Boolean =
+        generateSequence(this) { it.cause }.any { it is java.net.ProtocolException }
+
+    /**
+     * How much this failure tells the user, used to pick which attempt to report when several
+     * schemes failed. A reply that arrived outranks a silence, because "the device answered with
+     * something I cannot read" points at the device, while a timeout suggests the wrong address —
+     * and only the former is true when the device did answer.
+     */
+    private fun Throwable.rank(): Int = when (this) {
+        is RouterError.InvalidCredentials -> 40
+        is RouterError.DeviceResponseUnreadable -> 30
+        is RouterError.FeatureNotSupported -> 25
+        is RouterError.UnsupportedFirmware -> 20
+        is RouterError.Timeout -> 10
+        is RouterError.DeviceNotFound -> 5
+        else -> 1
+    }
 
     private fun ensureSuccess(response: Response, routeKey: String) {
         when (response.code) {
@@ -606,6 +684,13 @@ class ZltRouterApi(
             401, 403 -> throw RouterError.InvalidCredentials()
             404 -> throw RouterError.FeatureNotSupported(routeKey, "HTTP 404")
             408, 504 -> throw RouterError.Timeout("HTTP ${response.code}")
+            // Redirects are not followed (see [defaultClient]): OkHttp rewrites a redirected POST
+            // into a GET, which would drop the goform body and turn a login into an anonymous
+            // page fetch. The device is telling us the resource moved, and the caller decides
+            // what to do about it.
+            in 300..399 -> throw RouterError.DeviceResponseUnreadable(
+                "HTTP ${response.code} → ${response.header("Location") ?: "بلا عنوان تحويل"} ($routeKey)",
+            )
             else -> throw RouterError.TemporaryFailure("HTTP ${response.code} ($routeKey)")
         }
     }
@@ -764,6 +849,13 @@ class ZltRouterApi(
             .writeTimeout(config.requestTimeoutSeconds.toLong(), TimeUnit.SECONDS)
             .retryOnConnectionFailure(false)
             .cookieJar(InMemoryCookieJar)
+            // Redirects are handled by the caller, not chased here. OkHttp rewrites a redirected
+            // POST into a GET and drops the body, so following one would turn a goform login into
+            // an anonymous fetch of the login page and report "wrong password" for a correct one.
+            // The device's Location header is also evidence worth keeping in the connection log,
+            // which chasing it would consume before the transport could record it.
+            .followRedirects(false)
+            .followSslRedirects(false)
             // The device's HTTPS presents a self-signed certificate, so the platform's trust
             // anchors reject the router the user is connected to. Requests only ever go to
             // private addresses (RouterUrl.base enforces that), so accepting the device's own

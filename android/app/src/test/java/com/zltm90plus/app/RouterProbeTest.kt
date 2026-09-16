@@ -131,6 +131,26 @@ class RouterProbeTest {
     }
 
     /**
+     * The log used to say `DISCOVERY_PROBE http://192.168.8.1/` while the failure named port 443,
+     * because the probe had already moved on to https. That contradiction is what made a device
+     * that was answering look unreachable, so the attempt must report the URL it actually used.
+     */
+    @Test
+    fun `a failed probe reports the scheme it actually tried last`() = runTest {
+        // A socket that accepts and never answers, so both schemes fail on a read timeout.
+        val silent = RawHttpServer(status = null, location = null).start().also { server = it }
+
+        val attempt = RouterProbe(connectTimeoutMillis = 400).probe(silent.address)
+
+        assertFalse(attempt.reachable)
+        assertEquals(
+            "the reported URL must match the request that failed, not the first one tried",
+            "https://${silent.address}/",
+            attempt.attemptedUrl,
+        )
+    }
+
+    /**
      * The failure from the field log, reproduced end to end.
      *
      * The log showed `SSLHandshakeException: Trust anchor for certification path not found` for

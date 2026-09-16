@@ -13,7 +13,7 @@ JDK 21 and Android SDK 34 are required. Gradle wrapper is checked in.
 cd android
 ./gradlew assembleDebug      # debug APK
 ./gradlew assembleRelease    # release APK (falls back to the debug key)
-./gradlew testDebugUnitTest  # 110 unit + Robolectric tests
+./gradlew testDebugUnitTest  # 125 unit + Robolectric tests
 ./gradlew lintDebug          # must stay at 0 errors
 ```
 
@@ -72,6 +72,30 @@ Strict layering: `ui/screens` (Compose) → `ui/MainViewModel` (state) → `data
 - Uptime `realtime_time` is in **seconds**; `readUptimeMinutes` does the conversion.
 - Prefer `ppp_status` over `wan_connect_status`: the latter can be present but empty, and an empty
   key must not mask a populated alias.
+- **The scheme discovery infers is a preference, not a determination.** Discovery only ever sees
+  `GET /`, and this firmware redirects that one path to HTTPS while serving its entire API over
+  plain HTTP. Acting on that inference pointed the login at https, where every API path answers
+  `404 Not Found` with a GoAhead error page. `login` therefore tries its preferred scheme and then
+  the other, and `resolvedScheme` remembers whichever one answered, so later reads use it too.
+- **Redirects are not followed on the API client.** OkHttp rewrites a redirected POST into a GET
+  and drops the body, so chasing a redirect would turn a goform login into an anonymous fetch of
+  the login page and report the wrong password. `followRedirects(false)` keeps the `Location`
+  header, which is worth recording in the connection log.
+- The device's GoAhead server has been seen answering a reused connection with a status line that
+  repeats the request line: `ProtocolException: Unexpected status line:
+  /goform/goform_set_cmd_process HTTP/1.1 301 Moved Permanently`. Requests send
+  `Connection: close` to avoid the desync, and that error maps to `DeviceResponseUnreadable`
+  rather than `TemporaryFailure` — retrying cannot change the answer, so offering a retry is
+  misleading.
+- Login reports the **most informative** failure, not the last one. A malformed reply on http
+  outranks the connect timeout that https produces against the same plain-HTTP port; reporting the
+  timeout would hide the fact that the device answered at all. See `Throwable.rank()`.
+- A phone on a different subnet than the device has no route to it, and the timeout that produces
+  is indistinguishable from a dead device. When the device did not answer *and* its address shares
+  no /24 with the phone, `MainViewModel` reports `WrongNetwork`, naming both addresses.
+- The connection log records a redirect's `Location` (`redirectLocation`) and the URL a probe
+  actually attempted (`Attempt.attemptedUrl`). Without the latter the log paired
+  `DISCOVERY_PROBE http://192.168.8.1/` with a port-443 failure, which reads as a contradiction.
 
 ## Testing notes
 

@@ -30,6 +30,15 @@ class RouterProbe(private val connectTimeoutMillis: Long = 1_000) {
         /** Scheme to continue on, learned from a redirect or a TLS handshake. */
         val scheme: String?,
         val detail: String?,
+        /**
+         * The scheme of the request that produced this outcome.
+         *
+         * Kept so the connection log can name the address that was actually tried. Without it the
+         * log said `DISCOVERY_PROBE http://192.168.8.1/` while the failure mentioned port 443,
+         * because the probe had already moved on to `https` — which reads as a contradiction and
+         * hid the fact that the device was answering.
+         */
+        val attemptedUrl: String? = null,
     )
 
     /**
@@ -41,9 +50,12 @@ class RouterProbe(private val connectTimeoutMillis: Long = 1_000) {
     suspend fun probe(candidate: String): Attempt = withContext(Dispatchers.IO) {
         val client = client()
         var lastFailure: String? = null
+        var lastUrl: String? = null
 
         for (scheme in SCHEMES) {
-            val request = Request.Builder().url("$scheme://$candidate/").get().build()
+            val attemptUrl = "$scheme://$candidate/"
+            val request = Request.Builder().url(attemptUrl).get().build()
+            lastUrl = attemptUrl
             try {
                 client.newCall(request).execute().use { response ->
                     // Any status proves something is there. A redirect also tells us which scheme
@@ -52,6 +64,7 @@ class RouterProbe(private val connectTimeoutMillis: Long = 1_000) {
                         reachable = true,
                         scheme = redirectScheme(response.header("Location")) ?: scheme,
                         detail = "HTTP ${response.code}",
+                        attemptedUrl = attemptUrl,
                     )
                 }
             } catch (error: Throwable) {
@@ -59,11 +72,16 @@ class RouterProbe(private val connectTimeoutMillis: Long = 1_000) {
                 // A TLS failure means the socket connected and a handshake started, so the address
                 // is occupied. The device simply cannot present a certificate Android trusts.
                 if (error.hasTlsCause()) {
-                    return@withContext Attempt(reachable = true, scheme = "https", detail = lastFailure)
+                    return@withContext Attempt(
+                        reachable = true,
+                        scheme = "https",
+                        detail = lastFailure,
+                        attemptedUrl = attemptUrl,
+                    )
                 }
             }
         }
-        Attempt(reachable = false, scheme = null, detail = lastFailure)
+        Attempt(reachable = false, scheme = null, detail = lastFailure, attemptedUrl = lastUrl)
     }
 
     /** Probes [candidates] in order and stops at the first device that answers. */
@@ -72,7 +90,9 @@ class RouterProbe(private val connectTimeoutMillis: Long = 1_000) {
             val startedAt = System.currentTimeMillis()
             val attempt = probe(candidate)
             Diagnostics.recordProbe(
-                url = "http://$candidate/",
+                // The URL that actually produced this outcome, so the log never pairs an `http`
+                // label with a port-443 failure.
+                url = attempt.attemptedUrl ?: "http://$candidate/",
                 reachable = attempt.reachable,
                 detail = attempt.detail,
                 durationMillis = System.currentTimeMillis() - startedAt,

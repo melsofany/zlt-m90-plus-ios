@@ -38,6 +38,19 @@ class FakeGoformServer(
     @Volatile
     var sessionAlwaysInvalid = false
 
+    /**
+     * When true, every answer is preceded by a verbatim echo of the request line, which is what
+     * the device's GoAhead server was observed doing: the bytes began
+     * `/goform/goform_set_cmd_process HTTP/1.1 301 Moved Permanently`. OkHttp cannot parse that as
+     * a status line, so the client has to recognise it rather than call it a network fault.
+     */
+    @Volatile
+    var echoRequestLineAsStatus = false
+
+    /** When true, the goform paths answer 404, which is what this firmware does over https. */
+    @Volatile
+    var goformReturns404 = false
+
     @Volatile
     private var running = true
 
@@ -91,12 +104,16 @@ class FakeGoformServer(
 
             val query = target.substringAfter('?', "")
             val path = target.substringBefore('?')
+            if (goformReturns404 && path.contains("/goform/")) {
+                write(socket, Response(404, "<html><body>404 Not Found</body></html>"))
+                return
+            }
             val response = when {
                 path.endsWith("/goform/goform_set_cmd_process") -> handleSet(body)
                 path.endsWith("/goform/goform_get_cmd_process") -> handleGet(query, headers)
                 else -> Response(200, "<html><body>login</body></html>")
             }
-            write(socket, response)
+            write(socket, response, if (echoRequestLineAsStatus) requestLine else null)
         }
     }
 
@@ -152,9 +169,24 @@ class FakeGoformServer(
         return Response(200, json.toString())
     }
 
-    private fun write(socket: Socket, response: Response) {
+    /**
+     * [echoStatusInsteadOf] writes the request line verbatim where the status line belongs, which
+     * is the malformed reply the device produced. It is passed explicitly per response rather than
+     * read from the flag so the behaviour is visible at each call site.
+     */
+    private fun write(socket: Socket, response: Response, echoStatusInsteadOf: String? = null) {
         val writer = OutputStreamWriter(socket.getOutputStream(), Charsets.ISO_8859_1)
         val payload = response.body.toByteArray(Charsets.UTF_8)
+        if (echoStatusInsteadOf != null) {
+            // "/goform/goform_set_cmd_process HTTP/1.1 301 Moved Permanently", exactly as seen.
+            writer.write(echoStatusInsteadOf + " HTTP/1.1 301 Moved Permanently\r\n")
+            writer.write("Content-Length: ${payload.size}\r\n")
+            writer.write("Connection: close\r\n\r\n")
+            writer.flush()
+            socket.getOutputStream().write(payload)
+            socket.getOutputStream().flush()
+            return
+        }
         writer.write("HTTP/1.1 ${response.status} OK\r\n")
         writer.write("Content-Type: application/json\r\n")
         writer.write("Content-Length: ${payload.size}\r\n")
