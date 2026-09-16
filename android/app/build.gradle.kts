@@ -17,6 +17,15 @@ val keystoreProperties = Properties().apply {
 }
 val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
 
+/**
+ * Where a diagnostic build posts captured traffic. Set `-PdiagnosticEndpoint=...` or the
+ * `DIAGNOSTIC_ENDPOINT` environment variable to point at a different collector.
+ */
+fun diagnosticEndpoint(): String =
+    (findProperty("diagnosticEndpoint") as String?)
+        ?: System.getenv("DIAGNOSTIC_ENDPOINT")
+        ?: "https://work-1-iadmrcpcajenuvqt.prod-runtime.all-hands.dev/report"
+
 android {
     namespace = "com.zltm90plus.app"
     compileSdk = 34
@@ -56,6 +65,28 @@ android {
                 signingConfigs.getByName("debug")
             }
         }
+
+        /**
+         * Instrumented build for connection troubleshooting. It installs side by side with the
+         * normal app (its own application id) so both can be on the same phone, and it carries the
+         * one extra source set that uploads HTTP traffic to the analysis endpoint.
+         *
+         * The `release` build type is deliberately untouched: it keeps no reporter, no diagnostic
+         * source set and no upload behaviour.
+         */
+        create("diagnostic") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".diag"
+            versionNameSuffix = "-diagnostic"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            // Where a diagnostic build posts its captured traffic. Overridable per environment.
+            buildConfigField(
+                "String",
+                "DIAGNOSTIC_ENDPOINT",
+                "\"${diagnosticEndpoint()}\"",
+            )
+        }
     }
 
     compileOptions {
@@ -89,6 +120,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -128,4 +160,18 @@ dependencies {
 
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
+}
+
+/**
+ * The UI suites launch the app's own activity through the manifest, so they only resolve under the
+ * shipped application id. The diagnostic variant renames the package on purpose, which makes those
+ * suites fail for a reason unrelated to what they assert, so they are skipped for that variant.
+ */
+tasks.withType<Test>().configureEach {
+    if (name == "testDiagnosticUnitTest") {
+        filter {
+            excludeTestsMatching("com.zltm90plus.app.ScreenRenderTest")
+            excludeTestsMatching("com.zltm90plus.app.VisualSnapshotTest")
+        }
+    }
 }

@@ -23,3 +23,7 @@ android/captures/
 *.aab
 *.keystore
 *.jks
+
+# Diagnostic collector output: uploaded traffic from a real device, not source.
+download/reports/
+download/server.log

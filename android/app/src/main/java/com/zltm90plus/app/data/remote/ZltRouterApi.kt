@@ -10,6 +10,9 @@ import com.zltm90plus.app.data.model.NetworkState
 import com.zltm90plus.app.data.model.NetworkStatus
 import com.zltm90plus.app.data.model.RouterDeviceInfo
 import com.zltm90plus.app.data.model.SignalLevel
+import com.zltm90plus.app.diagnostics.DiagnosticExchange
+import com.zltm90plus.app.diagnostics.DiagnosticRedaction
+import com.zltm90plus.app.diagnostics.Diagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Cookie
@@ -494,7 +497,73 @@ class ZltRouterApi(
         return executeRequest(builder.build())
     }
 
-    private fun executeRequest(request: Request): Response =
+    private fun executeRequest(request: Request): Response {
+        // Only runs when a diagnostics build installed a sink; a no-op otherwise.
+        if (!Diagnostics.enabled) return executeRequestInternal(request)
+        val startedAt = System.currentTimeMillis()
+        val url = request.url.toString()
+        val body = runCatching { request.body?.let(::bodyText) }.getOrNull()
+        return try {
+            val response = executeRequestInternal(request)
+            val text = runCatching { response.peekBody(PEEK_LIMIT)?.string() }.getOrNull()
+            Diagnostics.record(
+                DiagnosticExchange(
+                    timestampMillis = startedAt,
+                    url = url,
+                    method = request.method,
+                    requestBody = body?.let(DiagnosticRedaction::redact),
+                    statusCode = response.code,
+                    responseBody = text?.let(DiagnosticRedaction::redact),
+                    error = null,
+                    durationMillis = System.currentTimeMillis() - startedAt,
+                ),
+            )
+            response
+        } catch (e: Throwable) {
+            Diagnostics.record(
+                DiagnosticExchange(
+                    timestampMillis = startedAt,
+                    url = url,
+                    method = request.method,
+                    requestBody = body?.let(DiagnosticRedaction::redact),
+                    statusCode = null,
+                    responseBody = null,
+                    error = describeFailure(e),
+                    durationMillis = System.currentTimeMillis() - startedAt,
+                ),
+            )
+            throw e
+        }
+    }
+
+    /**
+     * Names the failure in the terms needed to act on it. The transport maps socket errors onto
+     * [com.zltm90plus.app.data.remote.RouterError] subclasses, whose message is Arabic prose for
+     * the user; the underlying OS error is what identifies the cause, so both are kept.
+     */
+    private fun describeFailure(error: Throwable): String {
+        val root = generateSequence(error) { it.cause }.last()
+        val parts = buildList {
+            add("${error.javaClass.simpleName}: ${error.message}")
+            if (error is com.zltm90plus.app.data.remote.RouterError) {
+                error.technicalDetail?.let { add("detail=$it") }
+            }
+            if (root !== error) add("root=${root.javaClass.simpleName}: ${root.message}")
+        }
+        return DiagnosticRedaction.redact(parts.joinToString(" | "))
+    }
+
+    /**
+     * Reads a request body without consuming it. `peekBody` is not available on the request side,
+     * so the buffer is copied back once read.
+     */
+    private fun bodyText(body: RequestBody): String {
+        val buffer = okio.Buffer()
+        body.writeTo(buffer)
+        return buffer.readUtf8()
+    }
+
+    private fun executeRequestInternal(request: Request): Response =
         try {
             client.newCall(request).execute()
         } catch (e: SocketTimeoutException) {
@@ -636,6 +705,8 @@ class ZltRouterApi(
     companion object {
         private const val INTERNET_PROBE_URL = "http://connectivitycheck.gstatic.com/generate_204"
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android) ZLTM90Plus"
+        /** Enough of a response to identify the firmware's answer without holding it all. */
+        private const val PEEK_LIMIT = 64L * 1024L
         private val TOKEN_ALIASES = listOf("token", "stok", "session", "sessionid", "key")
         private val RESULT_ALIASES = listOf("result")
 

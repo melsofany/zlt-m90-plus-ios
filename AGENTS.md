@@ -13,15 +13,39 @@ JDK 21 and Android SDK 34 are required. Gradle wrapper is checked in.
 cd android
 ./gradlew assembleDebug      # debug APK
 ./gradlew assembleRelease    # release APK (falls back to the debug key)
-./gradlew testDebugUnitTest  # 54 unit + Robolectric tests
+./gradlew assembleDiagnostic # troubleshooting APK (see "Diagnostic build" below)
+./gradlew testDebugUnitTest  # 93 unit + Robolectric tests
+./gradlew testDiagnosticUnitTest # reporter tests for the diagnostic variant
 ./gradlew lintDebug          # must stay at 0 errors
 ```
 
-APKs land in `android/app/build/outputs/apk/{debug,release}/`.
+APKs land in `android/app/build/outputs/apk/{debug,release,diagnostic}/`.
 If `ANDROID_HOME` is unset, create `android/local.properties` with `sdk.dir=/path/to/android-sdk`.
 
 Release signing is picked up automatically from `android/keystore.properties` (gitignored; see
 `keystore.properties.example`). No properties file means the debug key is used.
+
+## Diagnostic build
+
+When the app cannot reach a router there is nothing on the phone to inspect, so
+`assembleDiagnostic` produces a separate APK (`com.zltm90plus.app.diag`) that uploads the traffic
+it actually sent and received. It installs alongside the normal app; only the `diagnostic` source
+set contains upload behaviour.
+
+```bash
+# Point it at a collector other than the committed default:
+DIAGNOSTIC_ENDPOINT=https://example.test/report ./gradlew assembleDiagnostic
+```
+
+`download/serve.py` is that collector: it serves a download page and accepts `POST /report`,
+writing each report to `download/reports/` and logging a one-line summary.
+
+- `data/remote/ZltRouterApi.kt` records every exchange through `Diagnostics`, and
+  `ui/MainViewModel` records discovery probes; both are no-ops without a sink.
+- `DiagnosticRedaction` masks password/token fields before anything leaves the device. Keep it
+  that way: a report is uploaded to a shared endpoint.
+- The UI suites (`ScreenRenderTest`, `VisualSnapshotTest`) assert on the shipped application id and
+  are excluded from the diagnostic test task, because that variant renames the package.
 
 ## Architecture
 
@@ -67,3 +91,7 @@ Strict layering: `ui/screens` (Compose) → `ui/MainViewModel` (state) → `data
   are driven by `mutableStateOf` because `setContent` may only be called once per test.
 - There is no emulator in this environment (no `/dev/kvm`), so instrumented tests are not run; the
   Robolectric screenshots are the visual regression net.
+- Diagnostic tests install real sockets (`FakeGoformServer`, and a request-recording collector in
+  `DiagnosticReporterTest`) so capture and upload are asserted on the bytes that cross the wire.
+  The reporter keeps a failed report on disk on purpose, so tests delete
+  `filesDir/diagnostics-queue.json` in `@Before` to avoid a leftover being uploaded first.

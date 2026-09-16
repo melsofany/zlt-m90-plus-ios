@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.zltm90plus.app.diagnostics.Diagnostics
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -228,13 +229,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .retryOnConnectionFailure(false)
             .build()
         for (candidate in candidates) {
-            val reachable = withContext(Dispatchers.IO) {
+            val startedAt = System.currentTimeMillis()
+            val outcome = withContext(Dispatchers.IO) {
                 runCatching {
                     val request = Request.Builder().url("http://$candidate/").get().build()
                     probeClient.newCall(request).execute().use { true }
-                }.getOrDefault(false)
+                }
             }
-            if (reachable) return candidate
+            Diagnostics.recordProbe(
+                url = "http://$candidate/",
+                reachable = outcome.getOrDefault(false),
+                detail = outcome.exceptionOrNull()?.let { "${it.javaClass.simpleName}: ${it.message}" },
+                durationMillis = System.currentTimeMillis() - startedAt,
+            )
+            if (outcome.getOrDefault(false)) return candidate
         }
         return null
     }
