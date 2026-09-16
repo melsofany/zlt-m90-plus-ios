@@ -4,6 +4,22 @@
 
 - `/` — original SwiftUI scaffold for iOS (reference only; cannot be built on Linux).
 - `/android` — the deliverable Android app (Kotlin + Jetpack Compose). All active work happens here.
+- `/download` — the APK plus the small HTTP server the user downloads it from. `serve.py` is built on
+  `SimpleHTTPRequestHandler` but adds what a phone's download manager needs: byte ranges (`Range` →
+  206, with a `BoundedFile` so the body stops at the promised length), `HEAD`, `Content-Disposition`,
+  and request logging. The stdlib handler has none of these, and their absence is invisible to a
+  plain `curl` — verify with `python3 download/selftest.py <base-url>` before trusting a link.
+
+## Serving the APK
+
+```bash
+cp android/app/build/outputs/apk/release/app-release.apk download/ZLT-M90-Plus.apk
+cd download && ./serve-all.sh          # one server + one keeper per exposed port
+python3 selftest.py https://<host>/     # must pass before handing the link over
+```
+
+`serve.py` must not log a traceback when a client disconnects mid-download; that is normal. It also
+must not print secrets — it logs only method, path, and status.
 
 ## Build & test (Android)
 
@@ -13,7 +29,7 @@ JDK 21 and Android SDK 34 are required. Gradle wrapper is checked in.
 cd android
 ./gradlew assembleDebug      # debug APK
 ./gradlew assembleRelease    # release APK (falls back to the debug key)
-./gradlew testDebugUnitTest  # 125 unit + Robolectric tests
+./gradlew testDebugUnitTest  # 153 unit + Robolectric tests
 ./gradlew lintDebug          # must stay at 0 errors
 ```
 

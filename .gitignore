@@ -26,3 +26,7 @@ android/captures/
 
 # Download server output: request log only. The APK itself is gitignored above.
 download/server.log
+
+# Python bytecode from the download server scripts
+__pycache__/
+*.pyc
