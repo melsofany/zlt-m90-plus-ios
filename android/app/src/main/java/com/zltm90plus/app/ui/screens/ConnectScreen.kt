@@ -55,6 +55,7 @@ fun ConnectScreen(
     onDiscover: () -> Unit,
     onEnableDemo: () -> Unit,
     onDismissMessage: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
 ) {
     var showTechnical by remember { mutableStateOf(false) }
     val colors = statusColors()
@@ -191,6 +192,19 @@ fun ConnectScreen(
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onEnableDemo) { Text("تفعيل وضع العرض التجريبي") }
+                }
+            }
+
+            SectionCard(title = "تشخيص الاتصال") {
+                Text(
+                    text = "إذا لم يتصل التطبيق بالجهاز، يعرض السجل ما أرسله وما ردّ به الجهاز " +
+                        "بعد حجب كلمة المرور، حتى تعرف سبب الفشل.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = onOpenDiagnostics, modifier = Modifier.fillMaxWidth()) {
+                    Text("عرض سجل الاتصال")
                 }
             }
             Spacer(Modifier.height(24.dp))

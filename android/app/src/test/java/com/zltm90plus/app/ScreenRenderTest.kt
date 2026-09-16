@@ -151,6 +151,7 @@ class ScreenRenderTest {
                         onDiscover = {},
                         onEnableDemo = {},
                         onDismissMessage = {},
+                        onOpenDiagnostics = {},
                     )
                 }
             }
@@ -219,6 +220,9 @@ class ScreenRenderTest {
                     onDiscover = {},
                     onEnableDemo = {},
                     onDismissMessage = {},
+                    diagnosticExchanges = emptyList(),
+                    onShareDiagnostics = {},
+                    onClearDiagnostics = {},
                     onRefresh = {},
                     onSavePlan = { _, _, _, _, _ -> },
                     onUpdateWifi = { _, _, _ -> },
@@ -254,5 +258,57 @@ class ScreenRenderTest {
 
         val devices = api.fetchConnectedDevices()
         assert(devices.devices.isNotEmpty())
+    }
+
+    @Test
+    fun diagnosticsScreenShowsWhatWasSentAndReceivedWithoutThePassword() {
+        val secret = "Sup3rSecretPassw0rd"
+        // Exactly what the transport records: already redacted when the exchange is built.
+        val sentBody = com.zltm90plus.app.diagnostics.DiagnosticRedaction.redact(
+            "goformId=LOGIN&password=$secret",
+        )
+        val exchange = com.zltm90plus.app.diagnostics.DiagnosticExchange(
+            timestampMillis = 1_700_000_000_000,
+            url = "http://192.168.8.1/goform/goform_set_cmd_process",
+            method = "POST",
+            requestBody = sentBody,
+            statusCode = 200,
+            responseBody = """{"result":"0"}""",
+            error = null,
+            durationMillis = 31,
+        )
+
+        composeRule.setContent {
+            ZltTheme {
+                ZltApp(
+                    state = DashboardUiState(phase = ConnectionPhase.INVALID_CREDENTIALS),
+                    diagnosticExchanges = listOf(exchange),
+                    onHostChange = {},
+                    onUsernameChange = {},
+                    onPasswordChange = {},
+                    onConnect = {},
+                    onDiscover = {},
+                    onEnableDemo = {},
+                    onDismissMessage = {},
+                    onRefresh = {},
+                    onSavePlan = { _, _, _, _, _ -> },
+                    onUpdateWifi = { _, _, _ -> },
+                    onRestart = {},
+                    onDisconnect = {},
+                    onShareDiagnostics = {},
+                    onClearDiagnostics = {},
+                )
+            }
+        }
+
+        // The log must be reachable while the connection is failing, which is the whole point.
+        composeRule.onNodeWithText("عرض سجل الاتصال").performScrollTo().performClick()
+
+        composeRule.onNodeWithText("سجل الاتصال").assertIsDisplayed()
+        composeRule.onNodeWithText("goform_set_cmd_process", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithText("POST").assertIsDisplayed()
+
+        // The security property: the password the user typed is nowhere on this screen.
+        composeRule.onAllNodesWithText(secret, substring = true).assertCountEquals(0)
     }
 }

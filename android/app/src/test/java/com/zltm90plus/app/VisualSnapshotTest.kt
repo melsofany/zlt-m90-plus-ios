@@ -181,6 +181,7 @@ class VisualSnapshotTest {
             onDiscover = {},
             onEnableDemo = {},
             onDismissMessage = {},
+            onOpenDiagnostics = {},
         )
     }
 

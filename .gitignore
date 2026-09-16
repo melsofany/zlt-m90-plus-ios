@@ -24,6 +24,5 @@ android/captures/
 *.keystore
 *.jks
 
-# Diagnostic collector output: uploaded traffic from a real device, not source.
-download/reports/
+# Download server output: request log only. The APK itself is gitignored above.
 download/server.log

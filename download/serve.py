@@ -2,17 +2,13 @@
 """Serves the built APKs for download over the workspace's exposed port."""
 import html
 import http.server
-import json
 import os
 import socketserver
 import time
 import urllib.parse
-import uuid
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-REPORTS = os.path.join(ROOT, "reports")
 PORT = int(os.environ.get("PORT", "12000"))
-MAX_REPORT_BYTES = 4 * 1024 * 1024
 
 INDEX = """<!doctype html>
 <html lang="ar" dir="rtl"><head><meta charset="utf-8">
@@ -40,10 +36,9 @@ INDEX = """<!doctype html>
  li{{margin-bottom:5px;font-size:.92rem}}
 </style></head><body><div class="wrap">
 <h1>ZLT M90 Plus</h1>
-<p class="sub">إصدار مُصلَّح — يحل مشكلة عدم الاتصال بالجهاز</p>
-<div class="note"><b>ما الذي أُصلح:</b> كان التطبيق يرسل كلمة المرور كنص صريح، وهذا الجهاز
-يتطلب إرسالها مُرمَّزة بـ Base64. لذلك كان يرفض كلمة المرور الصحيحة ويظهر
-«بيانات الدخول غير صحيحة».</div>
+<p class="sub">نسخة واحدة تشمل كل شيء — مع سجل تشخيص مدمج</p>
+<div class="note"><b>نسخة واحدة تشمل كل شيء:</b> لا يوجد تطبيق منفصل للتشخيص. عند تعذّر الاتصال
+بالجهاز، افتح «عرض سجل الاتصال» داخل التطبيق لترى ما أرسله التطبيق وما ردّ به الجهاز.</div>
 {cards}
 <div class="card"><h2>طريقة التثبيت</h2>
 <ul>
@@ -51,6 +46,7 @@ INDEX = """<!doctype html>
 <li>عند طلب الإذن، اسمح بـ «تثبيت تطبيقات من مصادر غير معروفة».</li>
 <li>ثبّت التطبيق، ثم اتصل بشبكة Wi-Fi الخاصة بالجهاز.</li>
 <li>افتح التطبيق واضغط «اكتشاف الجهاز تلقائيًا»، ثم سجّل الدخول.</li>
+<li>إن فشل الاتصال، اضغط «عرض سجل الاتصال» لمعرفة السبب.</li>
 </ul></div>
 <div class="card"><h2>بصمة الملف (SHA-256)</h2>
 <p class="meta">للتأكد من سلامة الملف بعد التنزيل</p>
@@ -72,59 +68,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
-    def do_POST(self):
-        """Receives one diagnostic report from the instrumented APK."""
-        if urllib.parse.urlparse(self.path).path != "/report":
-            self.send_error(404, "not found")
-            return
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            length = 0
-        if length <= 0 or length > MAX_REPORT_BYTES:
-            self.send_error(413, "bad length")
-            return
-
-        payload = self.rfile.read(length)
-        os.makedirs(REPORTS, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-        path = os.path.join(REPORTS, f"report-{stamp}-{uuid.uuid4().hex[:6]}.json")
-        with open(path, "wb") as handle:
-            handle.write(payload)
-        summary = self.summarize(payload)
-        print(f"[report] {os.path.basename(path)} {len(payload)}B {summary}", flush=True)
-
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(b'{"ok":true}')
-
-    @staticmethod
-    def summarize(payload):
-        """Prints the interesting parts to the log so a failure is visible without opening files."""
-        try:
-            data = json.loads(payload.decode("utf-8"))
-        except Exception as error:  # noqa: BLE001 - a diagnostic server must not die on bad input
-            return f"unparseable: {error}"
-        exchanges = data.get("exchanges") or []
-        parts = []
-        for entry in exchanges:
-            if entry.get("kind") == "session":
-                network = entry.get("network") or {}
-                parts.append(
-                    "env wifi={} model={} gw={} local={}".format(
-                        network.get("onWifi"), entry.get("deviceModel"),
-                        network.get("gateway"), network.get("localIpv4"),
-                    )
-                )
-                continue
-            status = entry.get("status")
-            error = entry.get("error")
-            outcome = f"HTTP {status}" if status is not None else (error or "?")
-            body = (entry.get("responseBody") or "")[:180].replace("\n", " ")
-            parts.append(f"{entry.get('method')} {entry.get('url')} -> {outcome} | {body}")
-        return " || ".join(parts)
-
     def render_index(self):
         entries = sorted(
             f for f in os.listdir(ROOT)
@@ -133,16 +76,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         cards, hashes = [], []
         for name in entries:
             size = os.path.getsize(os.path.join(ROOT, name))
-            primary = "release" in name
-            label = "النسخة الموصى بها (release)" if primary else "نسخة التشخيص (debug)"
             cards.append(
-                '<div class="card"><h2>{label}</h2>'
+                '<div class="card"><h2>تطبيق ZLT M90 Plus</h2>'
                 '<p class="meta">{name} — {mb:.1f} ميجابايت</p>'
-                '<a class="btn{cls}" href="{href}" download>{label}</a></div>'.format(
-                    label=html.escape(label),
+                '<a class="btn" href="{href}" download>تنزيل التطبيق</a></div>'.format(
                     name=html.escape(name),
                     mb=size / 1048576,
-                    cls="" if primary else " alt",
                     href=urllib.parse.quote(name),
                 )
             )

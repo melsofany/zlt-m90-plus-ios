@@ -15,10 +15,10 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * The diagnostic build is only useful if the transport reports what it actually sent and received.
- * These tests install a recording sink exactly the way the diagnostic application does, then drive
- * a real login against [FakeGoformServer], so the capture is exercised over a real socket rather
- * than asserted against a mock.
+ * The connection log is only useful if the transport reports what it actually sent and received.
+ * These tests install a recording sink the way the application does, then drive a real login
+ * against [FakeGoformServer], so the capture is exercised over a real socket rather than asserted
+ * against a mock.
  */
 class DiagnosticCaptureTest {
 

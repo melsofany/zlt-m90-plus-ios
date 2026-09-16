@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.zltm90plus.app.diagnostics.DiagnosticExchange
+import com.zltm90plus.app.diagnostics.DiagnosticLog
 import com.zltm90plus.app.diagnostics.Diagnostics
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -370,6 +372,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun dismissMessage() = _state.update { it.copy(userMessage = null, technicalDetail = null) }
+
+    // --- diagnostics ------------------------------------------------------------------------
+
+    /**
+     * The connection log, exposed to the UI. It is the process-wide log rather than a copy, so the
+     * screen shows exactly what the transport recorded, and it updates as exchanges arrive.
+     */
+    val diagnosticExchanges: StateFlow<List<DiagnosticExchange>> = DiagnosticLog.exchanges
+
+    /** The share text for the log. Redaction already happened at capture time. */
+    fun diagnosticsReportText(): String = DiagnosticLog.asText()
+
+    fun clearDiagnostics() = DiagnosticLog.clear()
 
     fun toggleTechnicalDetails() =
         _state.update { it.copy(showTechnicalDetails = !it.showTechnicalDetails) }

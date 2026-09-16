@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.zltm90plus.app.data.model.DeviceSnapshot
+import com.zltm90plus.app.diagnostics.DiagnosticExchange
 import com.zltm90plus.app.ui.components.DeviceImage
 import com.zltm90plus.app.ui.components.SectionCard
 import com.zltm90plus.app.ui.components.StatusChip
@@ -50,6 +51,7 @@ import com.zltm90plus.app.ui.screens.ConnectionDetailScreen
 import com.zltm90plus.app.ui.screens.DataPlanCard
 import com.zltm90plus.app.ui.screens.DeviceHeaderCard
 import com.zltm90plus.app.ui.screens.DeviceImageScreen
+import com.zltm90plus.app.ui.screens.DiagnosticsScreen
 import com.zltm90plus.app.ui.screens.NetworkCard
 import com.zltm90plus.app.ui.screens.PlanDetailScreen
 import com.zltm90plus.app.ui.screens.SettingsScreen
@@ -69,6 +71,7 @@ enum class AppTab(val title: String, val icon: ImageVector) {
 @Composable
 fun ZltApp(
     state: DashboardUiState,
+    diagnosticExchanges: List<DiagnosticExchange>,
     onHostChange: (String) -> Unit,
     onUsernameChange: (String) -> Unit,
     onPasswordChange: (String) -> Unit,
@@ -81,7 +84,23 @@ fun ZltApp(
     onUpdateWifi: (String, String, (Result<Unit>) -> Unit) -> Unit,
     onRestart: ((Result<Unit>) -> Unit) -> Unit,
     onDisconnect: () -> Unit,
+    onShareDiagnostics: () -> Unit,
+    onClearDiagnostics: () -> Unit,
 ) {
+    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
+
+    // Reachable from both the connect screen and settings: the log is most useful precisely when
+    // the connection failed, which is before any dashboard exists.
+    if (showDiagnostics) {
+        DiagnosticsScreen(
+            exchanges = diagnosticExchanges,
+            onShare = onShareDiagnostics,
+            onClear = onClearDiagnostics,
+            onClose = { showDiagnostics = false },
+        )
+        return
+    }
+
     if (!state.isConnected || state.snapshot == null) {
         ConnectScreen(
             state = state,
@@ -92,6 +111,7 @@ fun ZltApp(
             onDiscover = onDiscover,
             onEnableDemo = onEnableDemo,
             onDismissMessage = onDismissMessage,
+            onOpenDiagnostics = { showDiagnostics = true },
         )
         return
     }
@@ -162,6 +182,7 @@ fun ZltApp(
                     onRestart = onRestart,
                     onOpenPlanSetup = { showPlanEditor = true },
                     onDisconnect = onDisconnect,
+                    onOpenDiagnostics = { showDiagnostics = true },
                 )
             }
         }
