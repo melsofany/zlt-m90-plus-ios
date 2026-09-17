@@ -113,6 +113,29 @@ serve that interface — every request is `http.cgi`. The commit `1d4422f` made 
 goform requests to `http.cgi` and correctly report the interface as unsupported. That remains
 correct behaviour until this interface is actually implemented.
 
+## How to confirm the digest recipe (local, no network)
+
+The recipe can be settled without reading minified JavaScript, and without sending the password
+anywhere. In the browser, on the router's own login page, open DevTools -> Console and run this —
+it computes SHA-256 **inside the page**, locally:
+
+```js
+crypto.subtle.digest('SHA-256', new TextEncoder().encode('PUT_PASSWORD_HERE'))
+  .then(b => console.log([...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('')))
+```
+
+Then log in with DevTools -> Network open, click the `http.cgi` request, and compare the `passwd`
+value it sent against the console's output.
+
+- If they match, the recipe is plain `sha256(password)` and login can be implemented immediately.
+- If they do not match, the digest includes something else (the 32-char `token` and
+  `domain_value` are the visible candidates), and `js/app.js` from the device is needed to read the
+  real recipe.
+
+Do not skip this check by assuming the simpler recipe. A wrong recipe yields a value the device
+rejects, and an app that then says "wrong password" would be repeating the exact bug that
+`1d4422f` fixed.
+
 ## What must not happen
 
 - Do not guess a `cmd` number. Every number above was observed in the user's own traffic.
