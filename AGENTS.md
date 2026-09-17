@@ -163,6 +163,23 @@ path in place.
 When adding a route, ask first whether the device publishes it. `router_routes.json`
 is a fallback, not the source of truth.
 
+## The device's real interface
+
+Firmware 1.12.8 serves a JSON dispatcher at `POST /cgi-bin/http.cgi` — not goform. The full
+protocol, derived from captured browser traffic, is in `docs/http-cgi-protocol.md`. Read it before
+touching `HttpCgiClient`. The parts most easily got wrong:
+
+- **No cookies.** The session is a `sessionId` field in the JSON body. It is the empty string before
+  login, and the 64-char value `cmd 100` returns afterwards.
+- **A token nonce.** `cmd 232` issues a 32-char token *before* login; `cmd 100` must echo it.
+- **The password is never sent.** `passwd` carries a 64-char digest. Which inputs feed it is still
+  unconfirmed, so it lives in config as `passwordDigest` (default `sha256`). A refused login raises
+  `LoginRejected`, which names *both* possible causes. Do not collapse it into "wrong password".
+- **Battery is inside `cmd 1005`**, not a command of its own.
+- `battery_status` means "a battery is present", not "charging" — hence its position at the end of
+  the `batteryCharging` aliases. RSRQ/RSSI/SINR are not aliases for RSRP; do not offer one
+  measurement under another's label.
+
 ## Testing notes
 
 - Robolectric Compose tests render a small viewport, so call `performScrollTo()` before `assertIsDisplayed()` on anything below the fold.
