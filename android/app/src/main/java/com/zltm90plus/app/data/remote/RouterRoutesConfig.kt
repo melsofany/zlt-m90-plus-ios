@@ -58,6 +58,16 @@ data class RouterRoutesConfig(
         /** `result` value the firmware returns for a wrong password. */
         val wrongPasswordResultCodes: List<String> = listOf("3"),
         val sessionTokenAliases: List<String> = emptyList(),
+        /**
+         * Substrings that identify a path belonging to this interface family.
+         *
+         * An endpoint learned from the device's own files is only spoken to when it carries one of
+         * these. This firmware's bundle names `/cgi-bin/http.cgi`, a JSON-RPC dispatcher with no
+         * `goformId` concept, and posting a goform login to it is a request in a protocol the device
+         * does not speak — which is how a correct password reached an endpoint that could not judge
+         * it. Configurable, because the words are a property of the firmware.
+         */
+        val endpointPathMarkers: List<String> = DEFAULT_ENDPOINT_PATH_MARKERS,
         /** Logical dataset name to comma-separated firmware field list. */
         val commands: Map<String, String> = emptyMap(),
         val writes: Map<String, Write> = emptyMap(),
@@ -82,6 +92,15 @@ data class RouterRoutesConfig(
         /** Accepted values for [Goform.loginPasswordEncoding]. */
         const val PASSWORD_ENCODING_BASE64 = "base64"
         const val PASSWORD_ENCODING_PLAIN = "plain"
+
+        /**
+         * Words that mark a path as answering the goform interface.
+         *
+         * A bundle names several endpoints and the app currently takes only the first. On this
+         * firmware the first is `/cgi-bin/http.cgi`, which is a different protocol entirely, so
+         * recognising the family is what keeps the login from being sent to it.
+         */
+        val DEFAULT_ENDPOINT_PATH_MARKERS = listOf("goform", "set_cmd_process", "get_cmd_process")
 
         /** Used when the asset is missing or malformed; keeps the app usable and honest. */
         val EMPTY = RouterRoutesConfig(
@@ -156,6 +175,8 @@ data class RouterRoutesConfig(
                 wrongPasswordResultCodes = goformObj?.optJSONArray("wrongPasswordResultCodes")?.toStringList()
                     ?.takeIf { it.isNotEmpty() } ?: Goform().wrongPasswordResultCodes,
                 sessionTokenAliases = goformObj?.optJSONArray("sessionTokenAliases")?.toStringList().orEmpty(),
+                endpointPathMarkers = goformObj?.optJSONArray("endpointPathMarkers")?.toStringList()
+                    ?.takeIf { it.isNotEmpty() } ?: Goform().endpointPathMarkers,
                 commands = goformObj?.optJSONObject("commands")?.toStringMap().orEmpty(),
                 writes = goformObj?.optJSONObject("writes")?.let { writes ->
                     buildMap {

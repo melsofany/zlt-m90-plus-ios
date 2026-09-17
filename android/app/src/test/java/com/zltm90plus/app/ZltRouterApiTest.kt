@@ -497,6 +497,93 @@ class ZltRouterApiTest {
         assertTrue("credential leaked into error text: $text", !text.contains("super-secret-password"))
     }
 
+    // --- the third field log, replayed ----------------------------------------------------
+
+    /**
+     * The device named `/cgi-bin/http.cgi`, and a goform login must not be sent there.
+     *
+     * That endpoint is a JSON-RPC dispatcher with no `goformId` concept. Posting a goform login to
+     * it produced `{"success":false,"cmd":-1,"message":"ROOT IS NULL."}`, so the password was never
+     * examined — yet the app told the user the password was wrong.
+     */
+    @Test
+    fun `a goform login is never posted to an endpoint from another interface family`() = runTest {
+        server.servesSinglePageShell = true
+        server.appBundleNamesForeignEndpointFirst = true
+        server.servesForeignHttpCgi = true
+        server.goformReturns404 = true
+
+        runCatching { api().login("admin", "admin") }
+
+        assertEquals(
+            "no login may be sent to an endpoint in a protocol this build does not speak",
+            0,
+            server.foreignLoginAttempts.get(),
+        )
+    }
+
+    /**
+     * A reply in that other protocol must not be reported as a wrong password.
+     *
+     * The reply carries no `result` key, so there is nothing in it that could judge credentials.
+     */
+    @Test
+    fun `a foreign reply is reported as an unsupported interface, not as a wrong password`() = runTest {
+        server.servesSinglePageShell = true
+        server.appBundleNamesForeignEndpointFirst = true
+        server.servesForeignHttpCgi = true
+        server.goformReturns404 = true
+
+        val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
+
+        assertTrue(
+            "the device never judged the password, so this must not be InvalidCredentials, got: $error",
+            error !is RouterError.InvalidCredentials,
+        )
+        assertTrue(
+            "the interface that is not supported must be named, got: $error",
+            error is RouterError.InterfaceNotSupported,
+        )
+        val detail = (error as? RouterError)?.technicalDetail
+        assertTrue(
+            "the endpoint must appear in the log, got: $detail",
+            detail?.contains("http.cgi") == true,
+        )
+    }
+
+    /**
+     * A session check that could not run is not a rejection.
+     *
+     * The field log's login was accepted, then `loginfo` 404'd — and that alone produced "اسم
+     * المستخدم أو كلمة المرور غير صحيحة". A check the firmware does not serve says nothing about
+     * credentials, so it must not be the thing that accuses them.
+     */
+    @Test
+    fun `a 404 on the session check does not turn an accepted login into a wrong password`() = runTest {
+        server.sessionCheckReturns404 = true
+
+        val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
+
+        assertTrue(
+            "an unanswerable session check must not accuse the password, got: $error",
+            error !is RouterError.InvalidCredentials,
+        )
+        assertEquals("the login itself must still be attempted once", 1, server.loginAttempts.get())
+    }
+
+    /** The other direction: a firmware that really does reject the session still says so. */
+    @Test
+    fun `a session the firmware refuses is still reported as wrong credentials`() = runTest {
+        server.sessionAlwaysInvalid = true
+
+        val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
+
+        assertTrue(
+            "a firmware that answers `not logged in` is a real rejection, got: $error",
+            error is RouterError.InvalidCredentials,
+        )
+    }
+
     private companion object {
         /**
          * The route table shipped in assets, so this test fails if the app's own configuration

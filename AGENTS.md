@@ -83,6 +83,19 @@ Strict layering: `ui/screens` (Compose) → `ui/MainViewModel` (state) → `data
    because the firmware does; a lenient fake that falls back to the raw value turns a real encoding
    bug into a green test. When adding a regression test, reintroduce the bug and confirm the test
    fails before trusting it.
+8. **A failure may only accuse something that was actually tested.** `اسم المستخدم أو كلمة المرور غير
+   صحيحة` may only be shown when the device evaluated the credentials and rejected them. Three field
+   logs have now been misdiagnosed because an unrelated later failure was collapsed into a verdict
+   about the password: a wrong path, an unserialisable redirect, and a 404 on the `loginfo` session
+   check. A check that cannot be performed answers "unknown", never "rejected" — see `SessionCheck`
+   in `ZltRouterApi`. This is rule 1 applied to errors rather than to values.
+9. **An endpoint learned from the device belongs to one interface family, and is only spoken to by
+   that family's code.** The 1.12.8 bundle names `/cgi-bin/http.cgi`, a JSON-RPC dispatcher that
+   answers `{"success":…,"cmd":…,"message":…}` and has no `goformId` concept. A goform login posted
+   there is a request in a protocol the device does not speak; it replies `ROOT IS NULL.` without
+   ever seeing the password. `goform.endpointPathMarkers` in `router_routes.json` gates this.
+10. **"The first path in the bundle" is a guess.** A minified bundle names several endpoints in
+   arbitrary order. Select by family (`isGoformEndpoint`), never by position.
 
 ## Router protocol notes
 
@@ -95,7 +108,16 @@ Strict layering: `ui/screens` (Compose) → `ui/MainViewModel` (state) → `data
   defaults to `base64`.
 - A login body needs `isTest=false` and `goformId=LOGIN`, and the `Referer` header must be set or
   the firmware ignores the request.
-- `loginfo` is the honest "am I logged in" flag. Confirm it after logging in.
+- `loginfo` is the honest "am I logged in" flag — but it is *corroboration*, not the verdict. It
+  must be `ok` to confirm a login, and only its explicit `not_login` may reject one. A 404 or an
+  unreadable body on that endpoint says nothing about the password, and treating it as a rejection
+  is what produced the third misdiagnosis.
+- A second dispatcher exists on this hardware at `/cgi-bin/http.cgi`, speaking
+  `{"cmd":<number>,"method":"POST","language":…,"sessionId":…}` JSON instead of goform. It is
+  reachable and answers, which is exactly why it must be recognised: replying is not consenting.
+  This build cannot drive it; `RouterError.InterfaceNotSupported` names it and says the credentials
+  were never evaluated. Supporting it means implementing that protocol from the device's own bytes,
+  not translating a goform request into it.
 - Uptime `realtime_time` is in **seconds**; `readUptimeMinutes` does the conversion.
 - Prefer `ppp_status` over `wan_connect_status`: the latter can be present but empty, and an empty
   key must not mask a populated alias.

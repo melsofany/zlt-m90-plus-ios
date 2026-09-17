@@ -23,6 +23,25 @@ sealed class RouterError(
         RouterError("اسم المستخدم أو كلمة المرور غير صحيحة.")
 
     /**
+     * The device's own files name an interface this build does not implement.
+     *
+     * Kept apart from [InvalidCredentials] and [UnsupportedFirmware], because the credentials were
+     * never evaluated. The M90 Plus 1.12.8 field log showed a login posted to `/cgi-bin/http.cgi`,
+     * an endpoint named by the device's own bundle, answered `{"success":false,"cmd":-1,
+     * "message":"ROOT IS NULL."}` — a dispatcher that has no `goformId` concept at all. Nothing
+     * there judged the password, yet the session check that followed 404'd and turned that into
+     * "wrong password", which sent the user looking for a credential problem that did not exist.
+     */
+    class InterfaceNotSupported(val endpoint: String, val deviceSaid: String? = null) :
+        RouterError(
+            "واجهة الجهاز على $endpoint غير مدعومة في هذا الإصدار، ولم تُقيَّم كلمة المرور.",
+            technicalDetail = listOfNotNull(
+                "endpoint=$endpoint",
+                deviceSaid?.takeIf { it.isNotBlank() }?.let { "device=$it" },
+            ).joinToString(" "),
+        )
+
+    /**
      * The device answered, but not with HTTP this client can use.
      *
      * Kept apart from [TemporaryFailure] on purpose. Retrying cannot help — the same request will

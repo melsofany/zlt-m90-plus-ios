@@ -119,6 +119,15 @@ class ZltRouterApi(
     @Volatile
     private var loginEndpoint: RouterLoginPage.Endpoint? = null
 
+    /**
+     * Endpoints the device's own files named that this build cannot speak to.
+     *
+     * The field log showed `/cgi-bin/http.cgi` here. Kept so the failure can name what the device
+     * actually publishes instead of only reporting that the login did not work.
+     */
+    @Volatile
+    private var foreignEndpoints: List<String> = emptyList()
+
     /** The real login path, taken from the device's page when it named one. */
     private fun setCmdPath(): String = loginEndpoint?.path ?: config.goform.setPath
 
@@ -239,6 +248,13 @@ class ZltRouterApi(
                     if (error.rank() >= (lastError?.rank() ?: Int.MIN_VALUE)) lastError = error
                 }
             }
+        }
+
+        // Nothing answered in a protocol this build speaks, but the device did publish endpoints.
+        // Naming them is the actionable form of this failure: it says which interface the firmware
+        // actually serves, which is what a fix has to be written against.
+        if (foreignEndpoints.isNotEmpty() && lastError !is RouterError.InvalidCredentials) {
+            throw RouterError.InterfaceNotSupported(foreignEndpoints.first())
         }
 
         throw when (val error = lastError) {
@@ -456,21 +472,50 @@ class ZltRouterApi(
                 ?: throw RouterError.UnsupportedFirmware("استجابة تسجيل الدخول غير قابلة للقراءة")
 
             val result = node.findString(RESULT_ALIASES)?.trim()
+
+            // The session can arrive two ways: the firmware cookie, or an explicit token in the
+            // body. The cookie jar already retains the former, so only a bare token is stored.
+            val handedSession = ResponseParser.extractSessionCookie(it.headers.toMultimap())
+                ?: node.findString(clientSessionAliases())
+            handedSession?.let(session::saveToken)
+
+            val endpoint = loginEndpoint?.path ?: goform.setPath
             when {
+                // The device named these codes itself, so they are its verdict on the credentials.
                 result != null && result in goform.wrongPasswordResultCodes ->
                     throw RouterError.InvalidCredentials()
                 result != null && result !in goform.successResultCodes ->
                     throw RouterError.InvalidCredentials()
                 result == null && looksLikeLoginPage(text) ->
                     throw RouterError.UnsupportedFirmware("الاستجابة صفحة HTML وليست واجهة goform")
+                // A session handed over is proof on its own; some builds answer with only a token.
+                result == null && handedSession != null -> Unit
+                // An envelope goform never uses, carrying the device's own refusal. This is the
+                // field log's `{"success":false,"cmd":-1,"message":"ROOT IS NULL."}`: a dispatcher
+                // with no `goformId` concept answered, so the password was never judged. Reporting
+                // it as a wrong password is what sent the user after a credential problem that did
+                // not exist, so it is named for what it is instead.
+                result == null && node.hasAnyField(FOREIGN_ENVELOPE_KEYS) ->
+                    throw RouterError.InterfaceNotSupported(
+                        endpoint = endpoint,
+                        deviceSaid = node.findString(FOREIGN_MESSAGE_ALIASES),
+                    )
+                // No verdict of any kind: an answer this build cannot interpret. Still not a
+                // statement about the password, which is the invariant that matters here.
+                result == null -> throw RouterError.DeviceResponseUnreadable(
+                    "استجابة تسجيل الدخول بلا حقل result: " +
+                        node.objectMap.keys.joinToString(", "),
+                )
             }
 
-            // The session can arrive two ways: the firmware cookie, or an explicit token in the
-            // body. The cookie jar already retains the former, so only a bare token is stored.
-            ResponseParser.extractSessionCookie(it.headers.toMultimap())?.let(session::saveToken)
-                ?: node.findString(clientSessionAliases())?.let(session::saveToken)
-
-            if (!goformSessionIsValid(scheme)) throw RouterError.InvalidCredentials()
+            // The session check only ever subtracts from what the device already said. `result`
+            // carrying an accepted code is the device stating the login succeeded; `loginfo` is
+            // corroboration. Only the device explicitly answering "not logged in" rejects; a check
+            // that could not run (404, unreadable body) leaves that statement standing rather than
+            // replacing it with an accusation about the password.
+            if (goformSessionCheck(scheme) == SessionCheck.REJECTED) {
+                throw RouterError.InvalidCredentials()
+            }
         }
     }
 
@@ -503,16 +548,32 @@ class ZltRouterApi(
         }
     }
 
+    /**
+     * What the firmware's own "am I logged in" flag (`loginfo`) said about the session.
+     *
+     * Three outcomes rather than a boolean, because the check is corroboration and a check that
+     * could not be performed is not a rejection. Collapsing [UNKNOWN] into "not logged in" is what
+     * turned a 404 on the session endpoint into "اسم المستخدم أو كلمة المرور غير صحيحة" — an
+     * accusation about the password from a request that never mentioned it.
+     */
+    private enum class SessionCheck { CONFIRMED, REJECTED, UNKNOWN }
+
     /** `loginfo` is the firmware's own "am I logged in" flag, so it is the honest confirmation. */
-    private fun goformSessionIsValid(scheme: String): Boolean = runCatching {
+    private fun goformSessionCheck(scheme: String): SessionCheck = runCatching {
         getGoform(config.goform.sessionCheckCmd, scheme).use { response ->
-            if (!response.isSuccessful) return false
+            // The endpoint is absent on this build: no verdict is available, and none is invented.
+            if (!response.isSuccessful) return SessionCheck.UNKNOWN
             val node = ResponseParser.parse(response.body?.string().orEmpty(), config.encoding)
-                ?: return false
-            val value = node.findString(listOf(config.goform.sessionCheckCmd)) ?: return false
-            value.equals(config.goform.sessionOkValue, ignoreCase = true)
+                ?: return SessionCheck.UNKNOWN
+            val value = node.findString(listOf(config.goform.sessionCheckCmd))
+                ?: return SessionCheck.UNKNOWN
+            if (value.equals(config.goform.sessionOkValue, ignoreCase = true)) {
+                SessionCheck.CONFIRMED
+            } else {
+                SessionCheck.REJECTED
+            }
         }
-    }.getOrDefault(false)
+    }.getOrDefault(SessionCheck.UNKNOWN)
 
     // --- internals ------------------------------------------------------------------------
 
@@ -835,7 +896,10 @@ class ZltRouterApi(
             userField = config.goform.loginUserField,
             passwordField = config.goform.loginPasswordField,
         )
-        RouterLoginPage.parse(html, defaults)?.let { return it }
+        RouterLoginPage.parse(html, defaults)?.let { endpoint ->
+            if (isGoformEndpoint(endpoint.path)) return endpoint
+            rememberForeignEndpoint(endpoint.path)
+        }
 
         // No form in the page: this firmware serves a single-page shell, so the API lives in its
         // JavaScript and the shell itself can never name it. Each script is read and asked for the
@@ -844,7 +908,11 @@ class ZltRouterApi(
         for (script in RouterLoginPage.scriptSources(html)) {
             val source = fetchText(base, script) ?: continue
             val found = RouterLoginPage.endpointsInBundle(source)
-            val path = found.firstOrNull()
+            // Only a path belonging to the interface this build speaks may be returned. Taking
+            // the first path in the bundle is what sent a login to `/cgi-bin/http.cgi`, a
+            // different protocol that answered without ever looking at the password.
+            val path = found.firstOrNull(::isGoformEndpoint)
+            found.filterNot(::isGoformEndpoint).forEach(::rememberForeignEndpoint)
             // The bundle is megabytes of minified framework, so the log gets what matters — the
             // paths found, and a bounded excerpt to show how they are written — rather than a file
             // nobody can read. The note carries the conclusion, which is the line to read first.
@@ -854,10 +922,10 @@ class ZltRouterApi(
                 detail = null,
                 durationMillis = 0,
                 page = source.take(EXCERPT_LIMIT),
-                note = if (path == null) {
-                    "لا مسار في هذا الملف (${source.length} حرفًا)"
-                } else {
-                    "المسار من ملف الجهاز: $path"
+                note = when {
+                    path != null -> "المسار من ملف الجهاز: $path"
+                    found.isNotEmpty() -> "مسارات ليست من عائلة goform: ${found.joinToString(", ")}"
+                    else -> "لا مسار في هذا الملف (${source.length} حرفًا)"
                 },
             )
             if (path == null) continue
@@ -868,6 +936,26 @@ class ZltRouterApi(
             return RouterLoginPage.Endpoint(path, defaults.userField, defaults.passwordField)
         }
         return null
+    }
+
+    /** True when a path the device named belongs to the interface this build speaks. */
+    private fun isGoformEndpoint(path: String): Boolean {
+        val markers = config.goform.endpointPathMarkers
+            .ifEmpty { RouterRoutesConfig.DEFAULT_ENDPOINT_PATH_MARKERS }
+        return markers.any { path.contains(it, ignoreCase = true) }
+    }
+
+    /**
+     * Keeps a path the device named that this build cannot speak to.
+     *
+     * Recorded rather than discarded: when no interface answers, naming the endpoint the device
+     * itself published is the difference between a bug report that can be acted on and one that
+     * only says the login failed.
+     */
+    private fun rememberForeignEndpoint(path: String) {
+        if (foreignEndpoints.none { it.equals(path, ignoreCase = true) }) {
+            foreignEndpoints = foreignEndpoints + path
+        }
     }
 
     /**
@@ -1074,6 +1162,17 @@ class ZltRouterApi(
         private const val EXCERPT_LIMIT = 4_000
         private val TOKEN_ALIASES = listOf("token", "stok", "session", "sessionid", "key")
         private val RESULT_ALIASES = listOf("result")
+
+        /**
+         * Keys of the JSON envelope the device's other dispatcher answers with.
+         *
+         * `/cgi-bin/http.cgi` replies `{"success":…,"cmd":…,"message":…}`, which carries no `result`
+         * at all. Recognising it is what lets the app say "this interface is not supported" instead
+         * of inventing a verdict on the password that nothing in the reply supports.
+         */
+        private val FOREIGN_ENVELOPE_KEYS = listOf("success", "cmd", "message")
+
+        private val FOREIGN_MESSAGE_ALIASES = listOf("message", "msg", "errmsg", "error")
 
         private val DEFAULT_PROTOCOL_ORDER =
             listOf(RouterRoutesConfig.GOFORM, RouterRoutesConfig.LUCI)

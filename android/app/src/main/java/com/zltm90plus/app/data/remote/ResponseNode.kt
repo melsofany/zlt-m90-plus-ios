@@ -75,6 +75,18 @@ class ResponseNode private constructor(
     fun findString(aliases: List<String>): String? =
         find(aliases)?.scalar?.trim()?.takeIf { it.isNotBlank() && !isUnavailablePlaceholder(it) }
 
+    /**
+     * True when this object carries any of the given keys, whatever their values.
+     *
+     * Used to recognise an envelope by its shape rather than by a value: a reply of
+     * `{"success":false,"cmd":-1,"message":…}` is identified by those keys being present, and the
+     * keys are the only stable thing about it.
+     */
+    fun hasAnyField(keys: List<String>): Boolean {
+        val normalized = keys.map { normalizeKey(it) }.toSet()
+        return objectValues?.keys?.any { normalizeKey(it) in normalized } == true
+    }
+
     fun findBoolean(aliases: List<String>, config: RouterRoutesConfig): Boolean? {
         val node = find(aliases) ?: return null
         node.boolean?.let { return it }

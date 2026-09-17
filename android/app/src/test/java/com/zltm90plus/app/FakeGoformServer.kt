@@ -65,6 +65,24 @@ class FakeGoformServer(
     var goformReturns404 = false
 
     /**
+     * When true, the goform paths answer 404 while `/cgi-bin/http.cgi` accepts anything.
+     *
+     * This is the third field log, reproduced: the device's bundle named `/cgi-bin/http.cgi`, and
+     * an earlier build posted a goform login to it. That endpoint is a different dispatcher, so it
+     * answered `{"success":false,"cmd":-1,"message":"ROOT IS NULL."}` — a reply with no `result`
+     * key, which the client reported as a wrong password even though the password never arrived.
+     */
+    @Volatile
+    var servesForeignHttpCgi = false
+
+    /** How many logins were posted to the foreign endpoint, to prove none are sent there. */
+    val foreignLoginAttempts = AtomicInteger()
+
+    /** The session-check path this server answers, so 404 on it can be exercised. */
+    @Volatile
+    var sessionCheckReturns404 = false
+
+    /**
      * When the malformed reply is served, this is the `Location` it carries, so a test can stand in
      * for the device that answers the configured address with a redirect to the port it really
      * listens on.
@@ -113,6 +131,18 @@ class FakeGoformServer(
         """var api={base:"/cgi-bin/goform/goform_set_cmd_process",read:"/cgi-bin/goform/goform_get_cmd_process"};"""
 
     /**
+     * The bundle firmware 1.12.8 serves: it names only its JSON-RPC dispatcher.
+     *
+     * Reproduced exactly from the field log. The bundle names `/cgi-bin/http.cgi` and no
+     * `*_set_cmd_process` path at all, which is why the login went to `http.cgi` while the read
+     * fell back to the configured `/goform/goform_get_cmd_process` and 404'd. A bundle that
+     * happened to contain a goform path would sort that one first and hide the bug, so this one
+     * deliberately does not.
+     */
+    @Volatile
+    var appBundleNamesForeignEndpointFirst: Boolean = false
+
+    /**
      * A bundle that mentions `base64` for unrelated reasons, as the real one does.
      *
      * The real page has `<script>…base64…</script>` and the real bundle runs a `Base64` polyfill, so
@@ -132,6 +162,14 @@ class FakeGoformServer(
      * A device has to publish the endpoint its form posts to, or the page could not log anyone in,
      * so this is the one source that cannot be a guess about the firmware.
      */
+    /** The bundle actually served, honouring [appBundleNamesForeignEndpointFirst]. */
+    private fun servedAppBundle(): String =
+        if (!appBundleNamesForeignEndpointFirst) {
+            appBundleBody
+        } else {
+            """var api={login:"/cgi-bin/http.cgi",data:"/cgi-bin/http.cgi"};"""
+        }
+
     private fun loginPageHtml(): String =
         if (!servesSinglePageShell) {
             """
@@ -224,6 +262,19 @@ class FakeGoformServer(
                 write(socket, Response(404, "<html><body>404 Not Found</body></html>"))
                 return
             }
+            if (servesForeignHttpCgi && path.contains("http.cgi")) {
+                foreignLoginAttempts.incrementAndGet()
+                // The verbatim reply from the field log: no `result` key anywhere.
+                write(
+                    socket,
+                    Response(200, """{"success":false,"cmd":-1,"message":"ROOT IS NULL."}"""),
+                )
+                return
+            }
+            if (servesForeignHttpCgi && path.contains("/goform/")) {
+                write(socket, Response(404, "<html><body>404 Not Found</body></html>"))
+                return
+            }
             val response = when {
                 path.endsWith(loginPath) && path.contains("set_cmd_process") -> handleSet(body)
                 path.endsWith(readPath) && path.contains("get_cmd_process") -> handleGet(query, headers)
@@ -239,7 +290,7 @@ class FakeGoformServer(
                 }
                 path == "/$appBundlePath" -> {
                     bundleRequests.incrementAndGet()
-                    Response(200, appBundleBody, listOf("Content-Type" to "application/javascript"))
+                    Response(200, servedAppBundle(), listOf("Content-Type" to "application/javascript"))
                 }
                 else -> Response(404, "<html><body>404 Not Found</body></html>")
             }
@@ -288,6 +339,10 @@ class FakeGoformServer(
     private fun handleGet(query: String, headers: Map<String, String>): Response {
         val cmd = query.parseForm()["cmd"].orEmpty()
         lastCmd.add(cmd)
+
+        if (sessionCheckReturns404 && cmd == "loginfo") {
+            return Response(404, "<html><body>404 Not Found</body></html>")
+        }
 
         val cookie = headers["cookie"].orEmpty()
         if (sessionAlwaysInvalid) return Response(200, """{"loginfo":"not_login"}""")
