@@ -42,6 +42,27 @@ sealed class RouterError(
         )
 
     /**
+     * The device refused a login, and this build cannot tell whether the password or the digest
+     * recipe was at fault.
+     *
+     * The `http.cgi` interface never receives the password — only a 64-character digest of it — and
+     * which inputs feed that digest is not yet confirmed. So a refusal has two possible causes, and
+     * the honest thing is to name both rather than pick one. Reporting it as a wrong password would
+     * repeat exactly the mistake `1d4422f` fixed: accusing a credential nothing had evaluated.
+     */
+    class LoginRejected(
+        val deviceSaid: String? = null,
+        val digestScheme: String? = null,
+    ) : RouterError(
+        "رفض الجهاز تسجيل الدخول. تحقق من اسم المستخدم وكلمة المرور، وإن كانتا صحيحتين فطريقة " +
+            "اشتقاق كلمة المرور غير مطابقة لهذا الإصدار.",
+        technicalDetail = listOfNotNull(
+            deviceSaid?.takeIf { it.isNotBlank() }?.let { "device=$it" },
+            digestScheme?.takeIf { it.isNotBlank() }?.let { "digest=$it" },
+        ).joinToString(" "),
+    )
+
+    /**
      * The device answered, but not with HTTP this client can use.
      *
      * Kept apart from [TemporaryFailure] on purpose. Retrying cannot help — the same request will

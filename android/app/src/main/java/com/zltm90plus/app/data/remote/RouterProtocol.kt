@@ -7,13 +7,18 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 private const val ROUTER_SCHEME = "http://"
 
 /**
- * Which query interface answered. The ZLT M90 Plus family ships more than one web UI: current
- * firmware (ZLT M90 Plus, 1.12.x) serves the goform/GoAhead interface, while older builds used
- * LuCI-style REST routes. The app probes and remembers the winner instead of assuming one.
+ * Which query interface answered. The ZLT M90 Plus family ships more than one web UI: firmware
+ * 1.12.8 serves a JSON `http.cgi` dispatcher, other builds serve the goform/GoAhead interface, and
+ * older ones used LuCI-style REST routes. The app probes and remembers the winner instead of
+ * assuming one.
+ *
+ * The three are genuinely different protocols, not three spellings of one: goform is `cmd`-driven
+ * over a query string with a `goformId` login, LuCI is REST, and `http.cgi` is a single POST
+ * endpoint taking a JSON body with numeric `cmd` values and no cookies at all.
  *
  * [AUTO] means "not detected yet"; the first successful probe replaces it.
  */
-enum class RouterProtocol { AUTO, GOFORM, LUCI }
+enum class RouterProtocol { AUTO, GOFORM, LUCI, HTTP_CGI }
 
 /**
  * Host validation for the router address.

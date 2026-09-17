@@ -166,15 +166,27 @@ class ZltRouterApi(
         for (scheme in schemeCandidates()) {
             for (candidate in interfaces) {
                 try {
-                    if (candidate == RouterRoutesConfig.GOFORM) {
-                        loginGoform(username, password, scheme)
-                        protocol = RouterProtocol.GOFORM
-                    } else {
-                        loginLuci(username, password, scheme)
-                        protocol = RouterProtocol.LUCI
+                    when (candidate) {
+                        RouterRoutesConfig.GOFORM -> {
+                            loginGoform(username, password, scheme)
+                            protocol = RouterProtocol.GOFORM
+                        }
+                        RouterRoutesConfig.HTTP_CGI -> {
+                            loginHttpCgi(username, password, scheme)
+                            protocol = RouterProtocol.HTTP_CGI
+                        }
+                        else -> {
+                            loginLuci(username, password, scheme)
+                            protocol = RouterProtocol.LUCI
+                        }
                     }
                     resolvedScheme = scheme
                     return@withContext
+                } catch (error: RouterError.LoginRejected) {
+                    // The http.cgi interface answered and refused the login. Like a credentials
+                    // rejection this is a definite answer from the right family, so the search stops
+                    // here rather than reporting a weaker failure from another interface.
+                    throw error
                 } catch (error: RouterError.InvalidCredentials) {
                     // The interface answered and rejected the credentials, so this is the right
                     // family and the right scheme; trying the next one would only produce a second
@@ -200,14 +212,24 @@ class ZltRouterApi(
                     endpointLearned = true
                     discoverLoginEndpoint(resolvedScheme ?: scheme)?.let { loginEndpoint = it }
                     try {
-                        if (candidate == RouterRoutesConfig.GOFORM) {
-                            loginGoform(username, password, resolvedScheme ?: error.scheme)
-                            protocol = RouterProtocol.GOFORM
-                        } else {
-                            loginLuci(username, password, resolvedScheme ?: error.scheme)
-                            protocol = RouterProtocol.LUCI
+                        val retryScheme = resolvedScheme ?: error.scheme
+                        when (candidate) {
+                            RouterRoutesConfig.GOFORM -> {
+                                loginGoform(username, password, retryScheme)
+                                protocol = RouterProtocol.GOFORM
+                            }
+                            RouterRoutesConfig.HTTP_CGI -> {
+                                loginHttpCgi(username, password, retryScheme)
+                                protocol = RouterProtocol.HTTP_CGI
+                            }
+                            else -> {
+                                loginLuci(username, password, retryScheme)
+                                protocol = RouterProtocol.LUCI
+                            }
                         }
                         return@withContext
+                    } catch (retry: RouterError.LoginRejected) {
+                        throw retry
                     } catch (retry: RouterError.InvalidCredentials) {
                         // The redirected address answered and rejected the credentials, which is a
                         // definite answer rather than another place to try.
@@ -223,15 +245,24 @@ class ZltRouterApi(
                         endpointLearned = true
                         if (discoverLoginEndpoint(scheme)?.let { loginEndpoint = it } != null) {
                             try {
-                                if (candidate == RouterRoutesConfig.GOFORM) {
-                                    loginGoform(username, password, scheme)
-                                    protocol = RouterProtocol.GOFORM
-                                } else {
-                                    loginLuci(username, password, scheme)
-                                    protocol = RouterProtocol.LUCI
+                                when (candidate) {
+                                    RouterRoutesConfig.GOFORM -> {
+                                        loginGoform(username, password, scheme)
+                                        protocol = RouterProtocol.GOFORM
+                                    }
+                                    RouterRoutesConfig.HTTP_CGI -> {
+                                        loginHttpCgi(username, password, scheme)
+                                        protocol = RouterProtocol.HTTP_CGI
+                                    }
+                                    else -> {
+                                        loginLuci(username, password, scheme)
+                                        protocol = RouterProtocol.LUCI
+                                    }
                                 }
                                 resolvedScheme = scheme
                                 return@withContext
+                            } catch (retry: RouterError.LoginRejected) {
+                                throw retry
                             } catch (retry: RouterError.InvalidCredentials) {
                                 throw retry
                             } catch (retry: Throwable) {
@@ -593,6 +624,7 @@ class ZltRouterApi(
                         is RouterError.DeviceNotFound,
                         is RouterError.Timeout,
                         is RouterError.InvalidCredentials,
+                        is RouterError.LoginRejected,
                         is RouterError.SessionExpired,
                         is RouterError.InvalidHost,
                         -> throw error
@@ -607,7 +639,7 @@ class ZltRouterApi(
      * Reads one dataset over whichever interface answered at login. Returns null when the
      * interface has no definition for it, which callers translate into "unavailable".
      */
-    private fun fetchDataset(routeKey: String): ResponseNode? = when (protocol) {
+    private suspend fun fetchDataset(routeKey: String): ResponseNode? = when (protocol) {
         RouterProtocol.GOFORM -> {
             val cmd = config.goform.commands[routeKey] ?: return null
             fetchGoformDataset(routeKey, cmd)
@@ -619,7 +651,46 @@ class ZltRouterApi(
                 parseBody(response, routeKey)
             }
         }
+        RouterProtocol.HTTP_CGI -> {
+            val cmd = config.httpCgi.commands[routeKey] ?: return null
+            fetchHttpCgiDataset(routeKey, cmd)
+        }
         RouterProtocol.AUTO -> throw RouterError.SessionExpired()
+    }
+
+    /**
+     * Logs in over the JSON `http.cgi` interface.
+     *
+     * The client owns the handshake, so this only has to bind it to the chosen scheme and surface
+     * its failures. A rejection is deliberately *not* translated into
+     * [RouterError.InvalidCredentials]: that interface never receives the password, only a derived
+     * digest whose recipe is unconfirmed, so the device refusing tells us less than it appears to.
+     */
+    private suspend fun loginHttpCgi(username: String, password: String, scheme: String) {
+        val client = HttpCgiClient(config, baseFor(scheme), this.client, session)
+        client.login(username, password)
+        httpCgiClient = client
+    }
+
+    /** The `http.cgi` client chosen at login. */
+    @Volatile
+    private var httpCgiClient: HttpCgiClient? = null
+
+    /**
+     * Reads one dataset over `http.cgi`.
+     *
+     * The command numbers come from `config.httpCgi.commands`, which is populated from the same
+     * `router_routes.json` that carries the goform commands — the numbers themselves are the
+     * device's, observed in captured traffic.
+     */
+    private suspend fun fetchHttpCgiDataset(routeKey: String, cmd: Int): ResponseNode {
+        val client = httpCgiClient ?: throw RouterError.SessionExpired()
+        val node = client.read(cmd)
+        if (!node.optBoolean("success", false)) {
+            throw UnsupportedFirmwareException("الأمر $cmd لم ينجح: $routeKey")
+        }
+        return ResponseParser.parse(node.toString(), config.encoding)
+            ?: throw UnsupportedFirmwareException("استجابة غير قابلة للقراءة: $routeKey")
     }
 
     private fun fetchGoformDataset(routeKey: String, cmd: String): ResponseNode {
@@ -999,6 +1070,7 @@ class ZltRouterApi(
      */
     private fun Throwable.rank(): Int = when (this) {
         is RouterError.InvalidCredentials -> 40
+        is RouterError.LoginRejected -> 40
         is RouterError.DeviceResponseUnreadable -> 30
         // Above a silence and below an unreadable reply: the device did answer, and it named
         // somewhere to go, but a redirect that led nowhere says less than a reply that could not
