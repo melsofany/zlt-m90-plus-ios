@@ -154,6 +154,19 @@ class HttpCgiClientTest {
         }
 
     @Test
+    fun `the signal figure is RSRP, never the RSSI the device also reports`() = runTest {
+        // cmd 1002 carries RSRP and RSSI side by side, and they are different measurements:
+        // RSRP -80 dBm is a good LTE signal, RSSI -48 is a different quantity entirely. The alias
+        // list once named `rssi` ahead of `rsrp`, so the value shown as "dBm" was RSSI wearing
+        // RSRP's label — a fabricated figure under a name the device never gave it.
+        val api = api()
+        api.login(server.wantUser, server.wantPassword)
+        val network = api.fetchNetworkStatus()
+
+        assertEquals(-80, network.signalDbm)
+    }
+
+    @Test
     fun `connected devices lists the clients the status command returned`() = runTest {
         val api = api()
         api.login(server.wantUser, server.wantPassword)

@@ -19,3 +19,5 @@ serving /workspace/project/zlt-m90-plus-ios/download on 0.0.0.0:12001
 2026-09-17 13:48:37 10.2.76.130 "GET /ZLT-M90-Plus.apk HTTP/1.1" 200 -
 2026-09-17 13:50:11 10.2.125.2 "GET /ZLT-M90-Plus.apk HTTP/1.1" 200 -
 2026-09-17 14:10:42 10.2.30.130 "GET /ZLT-M90-Plus.apk HTTP/1.1" 200 -
+serving /workspace/project/zlt-m90-plus-ios/download on 0.0.0.0:12001
+2026-09-18 19:43:42 127.0.0.1 "GET /ZLT-M90-Plus.apk HTTP/1.1" 200 -

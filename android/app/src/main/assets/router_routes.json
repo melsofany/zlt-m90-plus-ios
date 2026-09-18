@@ -343,11 +343,10 @@
     "signalDbm": [
       "lte_rsrp",
       "Z5g_rsrp",
-      "rssi",
       "rsrp",
+      "RSRP",
       "dbm",
-      "signal_dbm",
-      "RSRP"
+      "signal_dbm"
     ],
     "signalLevel": [
       "signal_level",

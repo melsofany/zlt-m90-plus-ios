@@ -10,6 +10,21 @@
   and request logging. The stdlib handler has none of these, and their absence is invisible to a
   plain `curl` — verify with `python3 download/selftest.py <base-url>` before trusting a link.
 
+## Read this before debugging anything
+
+`docs/problems-and-fixes.md` catalogues every fault this app has hit, with the symptom as observed,
+the cause, the fix, and how to tell the fix is real. Two failure modes recur there and account for
+most of the lost time:
+
+- **A test that passed for the wrong reason.** Several fakes were not faithful to the device, so a
+  green suite hid a real fault. The fake is part of the fix.
+- **A failure reported as a cause.** "I could not tell" repeatedly became a definite verdict —
+  "wrong password", "nothing responded" — which is the same offence as a fabricated value, with a
+  user acting on it.
+
+Consult it before re-deriving a diagnosis, and add an entry when you fix something that cost time.
+
+
 ## Serving the APK
 
 ```bash
@@ -29,12 +44,25 @@ JDK 21 and Android SDK 34 are required. Gradle wrapper is checked in.
 cd android
 ./gradlew assembleDebug      # debug APK
 ./gradlew assembleRelease    # release APK (falls back to the debug key)
-./gradlew testDebugUnitTest  # 153 unit + Robolectric tests
+./gradlew testDebugUnitTest  # 168 unit + Robolectric tests
 ./gradlew lintDebug          # must stay at 0 errors
 ```
 
 APKs land in `android/app/build/outputs/apk/{debug,release}/`.
-If `ANDROID_HOME` is unset, create `android/local.properties` with `sdk.dir=/path/to/android-sdk`.
+
+**Neither `JAVA_HOME` nor `ANDROID_HOME` is set in this environment, and Gradle reports only
+`JAVA_HOME is not set` — not that the JDK exists elsewhere.** Both are present; export them first or
+every Gradle invocation fails:
+
+```bash
+export JAVA_HOME=/workspace/jdk21
+export ANDROID_HOME=/workspace/android-sdk
+export PATH="$JAVA_HOME/bin:$PATH"
+```
+
+`android/local.properties` already carries `sdk.dir=/workspace/android-sdk`. If the SDK moves, update
+that file rather than relying on `ANDROID_HOME` alone.
+
 
 Release signing is picked up automatically from `android/keystore.properties` (gitignored; see
 `keystore.properties.example`). No properties file means the debug key is used.
