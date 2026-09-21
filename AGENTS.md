@@ -4,11 +4,14 @@
 
 - `/` — original SwiftUI scaffold for iOS (reference only; cannot be built on Linux).
 - `/android` — the deliverable Android app (Kotlin + Jetpack Compose). All active work happens here.
-- `/download` — the APK plus the small HTTP server the user downloads it from. `serve.py` is built on
-  `SimpleHTTPRequestHandler` but adds what a phone's download manager needs: byte ranges (`Range` →
-  206, with a `BoundedFile` so the body stops at the promised length), `HEAD`, `Content-Disposition`,
-  and request logging. The stdlib handler has none of these, and their absence is invisible to a
-  plain `curl` — verify with `python3 download/selftest.py <base-url>` before trusting a link.
+- `/download` — the APK plus the small HTTP server the user downloads it from. **A link served from
+  here dies with the sandbox**, so it is only for handing over a build in the current session. For a
+  link that survives, publish a GitHub Release: `releases/latest` is the durable URL.
+  `serve.py` is built on `SimpleHTTPRequestHandler` but adds what a phone's download manager needs:
+  byte ranges (`Range` → 206, with a `BoundedFile` so the body stops at the promised length), `HEAD`,
+  `Content-Disposition`, and request logging. The stdlib handler has none of these, and their absence
+  is invisible to a plain `curl` — verify with `python3 download/selftest.py <base-url>` before
+  trusting a link.
 
 ## Read this before debugging anything
 
