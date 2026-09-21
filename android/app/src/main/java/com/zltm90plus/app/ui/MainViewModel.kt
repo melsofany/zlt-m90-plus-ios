@@ -89,33 +89,71 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var autoRefreshJob: Job? = null
 
+    // --- state helpers -----------------------------------------------------------------------
+    private fun updateState(block: (DashboardUiState) -> DashboardUiState) {
+        _state.update(block)
+    }
+
+    private fun updateLoginForm(block: (LoginFormState) -> LoginFormState) {
+        _state.update { it.copy(loginForm = block(it.loginForm)) }
+    }
+
+    private fun updatePhase(phase: ConnectionPhase) {
+        _state.update { it.copy(phase = phase) }
+    }
+
+    private fun updateConnectionStatus(wifiConnected: Boolean, isDiscovering: Boolean = false) {
+        _state.update { it.copy(wifiConnected = wifiConnected, isDiscovering = isDiscovering) }
+    }
+
+    private fun updateUserMessage(message: String?) {
+        _state.update { it.copy(userMessage = message) }
+    }
+
+    private fun updateTechnicalDetail(detail: String?) {
+        _state.update { it.copy(technicalDetail = detail) }
+    }
+
+    private fun showError(error: Throwable, defaultMessage: String = "تعذر الاتصال بالجهاز. حاول مرة أخرى.") {
+        val userMessage = if (error is RouterError) error.userMessage else defaultMessage
+        val technicalDetail = if (error is RouterError) error.technicalDetail else null
+        _state.update {
+            it.copy(
+                userMessage = userMessage,
+                technicalDetail = technicalDetail
+            )
+        }
+    }
+
+    // --- connection ------------------------------------------------------------------------
+
     init {
         refreshNetworkPresence()
         // Start the form on the address the phone is actually routing through. The old default
         // was a fixed 192.168.0.1, which is simply the wrong device address on builds that ship
         // 192.168.1.1, and a wrong address looks exactly like a broken app.
         LocalNetworkChecker.currentGatewayIpv4(getApplication())?.let { gateway ->
-            _state.update { it.copy(loginForm = it.loginForm.copy(host = gateway)) }
+            updateLoginForm { it.copy(host = gateway) }
         }
     }
 
     // --- connection ------------------------------------------------------------------------
 
-    fun updateHost(value: String) = _state.update { it.copy(loginForm = it.loginForm.copy(host = value)) }
+    fun updateHost(value: String) = updateLoginForm { it.copy(host = value) }
 
-    fun updateUsername(value: String) = _state.update { it.copy(loginForm = it.loginForm.copy(username = value)) }
+    fun updateUsername(value: String) = updateLoginForm { it.copy(username = value) }
 
-    fun updatePassword(value: String) = _state.update { it.copy(loginForm = it.loginForm.copy(password = value)) }
+    fun updatePassword(value: String) = updateLoginForm { it.copy(password = value) }
 
     fun setDemoScenario(scenario: MockRouterApi.Scenario) =
-        _state.update { it.copy(demoScenario = scenario, demoMode = true) }
+        updateState { it.copy(demoScenario = scenario, demoMode = true) }
 
     /**
      * Explicit demo entry: requires a user tap, and the UI keeps a visible "sample data" banner
      * for as long as it is active.
      */
     fun enableDemoMode(scenario: MockRouterApi.Scenario = MockRouterApi.Scenario.NORMAL) {
-        _state.update {
+        updateState {
             it.copy(
                 demoMode = true,
                 demoScenario = scenario,
@@ -128,20 +166,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun connect() {
         val form = _state.value.loginForm
         val presence = LocalNetworkChecker.current(getApplication())
-        _state.update {
-            it.copy(
-                phase = ConnectionPhase.CONNECTING,
-                wifiConnected = presence.connectedToWifi,
-                userMessage = null,
-                technicalDetail = null,
-            )
-        }
+        
+        updatePhase(ConnectionPhase.CONNECTING)
+        updateConnectionStatus(presence.connectedToWifi)
+        updateUserMessage(null)
+        updateTechnicalDetail(null)
 
         viewModelScope.launch {
             factory.configure(form.host, if (_state.value.demoMode) _state.value.demoScenario else null)
             try {
                 repository.login(form.username, form.password)
-                _state.update { it.copy(phase = ConnectionPhase.CONNECTED) }
+                updatePhase(ConnectionPhase.CONNECTED)
                 refresh()
                 startAutoRefresh()
             } catch (error: Throwable) {
@@ -154,16 +189,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     mapError(error)
                 }
-                _state.update {
-                    it.copy(
-                        phase = phase,
-                        userMessage = if (phase == ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK) {
-                            RouterError.PhoneNotConnectedToDeviceNetwork().userMessage
-                        } else {
-                            (error as? RouterError)?.userMessage ?: "تعذر الاتصال بالجهاز. حاول مرة أخرى."
-                        },
-                        technicalDetail = (error as? RouterError)?.technicalDetail,
-                    )
+                updatePhase(phase)
+                if (phase == ConnectionPhase.PHONE_NOT_ON_DEVICE_NETWORK) {
+                    updateUserMessage(RouterError.PhoneNotConnectedToDeviceNetwork().userMessage)
+                } else {
+                    showError(error)
                 }
             }
         }
@@ -183,20 +213,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val presence = LocalNetworkChecker.current(getApplication())
         val gateway = LocalNetworkChecker.currentGatewayIpv4(getApplication())
         val candidates = LocalNetworkChecker.discoveryCandidates(presence.localIpv4, gateway)
-        _state.update {
-            it.copy(
-                wifiConnected = presence.connectedToWifi,
-                isDiscovering = true,
-                userMessage = if (!presence.connectedToWifi) {
-                    RouterError.PhoneNotConnectedToDeviceNetwork().userMessage
-                } else {
-                    "جاري البحث عن الجهاز على الشبكة…"
-                },
-            )
-        }
+        updateConnectionStatus(presence.connectedToWifi, true)
+        updateUserMessage(
+            if (!presence.connectedToWifi) {
+                RouterError.PhoneNotConnectedToDeviceNetwork().userMessage
+            } else {
+                "جاري البحث عن الجهاز على الشبكة…"
+            }
+        )
 
         if (!presence.connectedToWifi) {
-            _state.update { it.copy(isDiscovering = false) }
+            updateConnectionStatus(presence.connectedToWifi, false)
             return
         }
 
