@@ -1,5 +1,6 @@
 package com.zltm90plus.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -20,9 +21,11 @@ class MainActivity : ComponentActivity() {
             ZltTheme {
                 val viewModel: MainViewModel = viewModel()
                 val state by viewModel.state.collectAsStateWithLifecycle()
+                val exchanges by viewModel.diagnosticExchanges.collectAsStateWithLifecycle()
 
                 ZltApp(
                     state = state,
+                    diagnosticExchanges = exchanges,
                     onHostChange = viewModel::updateHost,
                     onUsernameChange = viewModel::updateUsername,
                     onPasswordChange = viewModel::updatePassword,
@@ -35,8 +38,23 @@ class MainActivity : ComponentActivity() {
                     onUpdateWifi = viewModel::updateWifi,
                     onRestart = viewModel::restartRouter,
                     onDisconnect = viewModel::disconnect,
+                    onShareDiagnostics = { share(viewModel.diagnosticsReportText()) },
+                    onClearDiagnostics = viewModel::clearDiagnostics,
                 )
             }
         }
+    }
+
+    /**
+     * Sharing is the only way a report leaves the device, and the user chooses the recipient. The
+     * text was redacted at capture time, so no credential is in what is handed over.
+     */
+    private fun share(report: String) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "سجل تشخيص ZLT M90 Plus")
+            putExtra(Intent.EXTRA_TEXT, report)
+        }
+        startActivity(Intent.createChooser(intent, "مشاركة سجل التشخيص"))
     }
 }

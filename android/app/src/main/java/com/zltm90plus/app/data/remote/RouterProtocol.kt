@@ -7,13 +7,18 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 private const val ROUTER_SCHEME = "http://"
 
 /**
- * Which query interface answered. The ZLT M90 Plus family ships more than one web UI: current
- * firmware (ZLT M90 Plus, 1.12.x) serves the goform/GoAhead interface, while older builds used
- * LuCI-style REST routes. The app probes and remembers the winner instead of assuming one.
+ * Which query interface answered. The ZLT M90 Plus family ships more than one web UI: firmware
+ * 1.12.8 serves a JSON `http.cgi` dispatcher, other builds serve the goform/GoAhead interface, and
+ * older ones used LuCI-style REST routes. The app probes and remembers the winner instead of
+ * assuming one.
+ *
+ * The three are genuinely different protocols, not three spellings of one: goform is `cmd`-driven
+ * over a query string with a `goformId` login, LuCI is REST, and `http.cgi` is a single POST
+ * endpoint taking a JSON body with numeric `cmd` values and no cookies at all.
  *
  * [AUTO] means "not detected yet"; the first successful probe replaces it.
  */
-enum class RouterProtocol { AUTO, GOFORM, LUCI }
+enum class RouterProtocol { AUTO, GOFORM, LUCI, HTTP_CGI }
 
 /**
  * Host validation for the router address.
@@ -102,6 +107,33 @@ object PrivateHost {
         }
         return authority.substringAfter(':', "").toIntOrNull()?.takeIf { it in 1..65535 }
     }
+
+    /**
+     * Trust manager that accepts any certificate chain.
+     *
+     * A router's own admin interface ships a self-signed certificate, which Android cannot chain
+     * to a public CA, so the device the user is standing next to is the one that fails TLS
+     * verification. Pointing the app at a public host is prevented upstream: every request URL is
+     * built through [RouterUrl.base], which rejects anything outside private / link-local space,
+     * and this factory is only ever installed on calls to those addresses. That is what keeps this
+     * from becoming a general "trust any certificate" hole.
+     *
+     * The exemption is deliberately not shared with [ZltRouterApi.platformTrustClient], which
+     * serves the one request that leaves the LAN; `RouterProbeTest` fails if the two are merged.
+     */
+    @Suppress("CustomX509TrustManager") // Scoped to private hosts; see the note above.
+    fun trustingTrustManager(): javax.net.ssl.X509TrustManager =
+        object : javax.net.ssl.X509TrustManager {
+            override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) = Unit
+            override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) = Unit
+            override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = emptyArray()
+        }
+
+    fun trustingSocketFactory(): javax.net.ssl.SSLSocketFactory {
+        val context = javax.net.ssl.SSLContext.getInstance("TLS")
+        context.init(null, arrayOf(trustingTrustManager()), java.security.SecureRandom())
+        return context.socketFactory
+    }
 }
 
 /**
@@ -110,14 +142,17 @@ object PrivateHost {
  */
 internal object RouterUrl {
 
-    fun base(hostInput: String): String {
+    fun base(hostInput: String, scheme: String = ROUTER_SCHEME.removeSuffix("://")): String {
         val host = PrivateHost.normalize(hostInput)
             ?: throw RouterError.InvalidHost("عنوان غير صالح: $hostInput")
         if (!PrivateHost.isAllowed(host)) {
             throw RouterError.InvalidHost(host)
         }
+        // Only http and https are ever produced, so a host input cannot smuggle in a scheme of
+        // its own; the caller's value is normalised rather than trusted.
+        val prefix = if (scheme.equals("https", ignoreCase = true)) "https://" else ROUTER_SCHEME
         val port = PrivateHost.portOf(hostInput)
-        return if (port != null && port != 80) "$ROUTER_SCHEME$host:$port" else ROUTER_SCHEME + host
+        return if (port != null && port != 80) "$prefix$host:$port" else prefix + host
     }
 
     /**

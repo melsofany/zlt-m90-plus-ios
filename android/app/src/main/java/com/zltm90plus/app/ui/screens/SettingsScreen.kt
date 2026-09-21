@@ -45,6 +45,7 @@ fun SettingsScreen(
     onRestart: ((Result<Unit>) -> Unit) -> Unit,
     onOpenPlanSetup: () -> Unit,
     onDisconnect: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
 ) {
     var ssid by remember { mutableStateOf("") }
     var wifiPassword by remember { mutableStateOf("") }
@@ -77,6 +78,19 @@ fun SettingsScreen(
             InfoRow(label = "العنوان المُعد", value = state.loginForm.host)
             state.lastRefreshMillis?.let {
                 InfoRow(label = "آخر تحديث ناجح", value = ArabicFormat.relativeTime(it))
+            }
+        }
+
+        SectionCard(title = "تشخيص الاتصال") {
+            Text(
+                text = "عند تعذّر الاتصال بالجهاز، يعرض السجل ما أرسله التطبيق وما ردّ به الجهاز، " +
+                    "بعد حجب كلمات المرور والرموز. يمكنك مشاركته لمساعدتك في تحديد السبب.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onOpenDiagnostics, modifier = Modifier.fillMaxWidth()) {
+                Text("عرض سجل الاتصال")
             }
         }
 

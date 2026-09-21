@@ -21,7 +21,14 @@ import kotlin.concurrent.thread
  * token, reads are `cmd`-driven, and a read without the session cookie is refused.
  */
 class FakeGoformServer(
-    private val password: String = "admin",
+    val password: String = "admin",
+    /**
+     * Accept a clear-text password as well as a Base64 one.
+     *
+     * Only for the test that configures plain encoding. The default is strict, because a lenient
+     * fake accepts a wrongly-encoded password and lets a green test hide a real bug.
+     */
+    private val acceptsPlainPassword: Boolean = false,
     /** Firmware fields this build does not implement; they come back absent. */
     private val unsupportedFields: Set<String> = emptySet(),
 ) {
@@ -29,6 +36,12 @@ class FakeGoformServer(
     private val serverSocket = ServerSocket(0, 0, InetAddress.getByName("127.0.0.1"))
 
     val loginAttempts = AtomicInteger()
+
+    /** How many times the login page was fetched, to prove the endpoint was learned from it. */
+    val pageRequests = AtomicInteger()
+
+    /** How many script bundles were fetched, to prove the shell was followed to its code. */
+    val bundleRequests = AtomicInteger()
     val queriesWithoutSession = AtomicInteger()
     val lastCmd: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
     val lastSetBody: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
@@ -37,6 +50,160 @@ class FakeGoformServer(
     /** When true every query answers as logged out, to exercise session-expiry handling. */
     @Volatile
     var sessionAlwaysInvalid = false
+
+    /**
+     * When true, every answer is preceded by a verbatim echo of the request line, which is what
+     * the device's GoAhead server was observed doing: the bytes began
+     * `/goform/goform_set_cmd_process HTTP/1.1 301 Moved Permanently`. OkHttp cannot parse that as
+     * a status line, so the client has to recognise it rather than call it a network fault.
+     */
+    @Volatile
+    var echoRequestLineAsStatus = false
+
+    /** When true, the goform paths answer 404, which is what this firmware does over https. */
+    @Volatile
+    var goformReturns404 = false
+
+    /**
+     * When true, the goform paths answer 404 while `/cgi-bin/http.cgi` accepts anything.
+     *
+     * This is the third field log, reproduced: the device's bundle named `/cgi-bin/http.cgi`, and
+     * an earlier build posted a goform login to it. That endpoint is a different dispatcher, so it
+     * answered `{"success":false,"cmd":-1,"message":"ROOT IS NULL."}` — a reply with no `result`
+     * key, which the client reported as a wrong password even though the password never arrived.
+     */
+    @Volatile
+    var servesForeignHttpCgi = false
+
+    /** How many logins were posted to the foreign endpoint, to prove none are sent there. */
+    val foreignLoginAttempts = AtomicInteger()
+
+    /** The session-check path this server answers, so 404 on it can be exercised. */
+    @Volatile
+    var sessionCheckReturns404 = false
+
+    /**
+     * When the malformed reply is served, this is the `Location` it carries, so a test can stand in
+     * for the device that answers the configured address with a redirect to the port it really
+     * listens on.
+     */
+    @Volatile
+    var redirectTarget: String? = null
+
+    /**
+     * Where the device really accepts a login, and where it really serves reads.
+     *
+     * Defaults match the configured paths. A test moves them to stand in for firmware 1.12.8, which
+     * answers the configured paths with 404 — the field failure this exists to catch.
+     */
+    @Volatile
+    var loginPath: String = "/goform/goform_set_cmd_process"
+
+    @Volatile
+    var readPath: String = "/goform/goform_get_cmd_process"
+
+    /** Field names the device's page states, so a test can prove they are taken from the page. */
+    @Volatile
+    var pageUserField: String = "user"
+
+    @Volatile
+    var pagePasswordField: String = "password"
+
+    /**
+     * Serve the single-page shell firmware 1.12.8 actually serves, instead of a plain login form.
+     *
+     * The real page is a Vue shell: `<div id="app">` and two `<script src>` tags, with no form and
+     * no endpoint anywhere in the HTML. The endpoint exists only inside the bundle, so a client that
+     * reads just the HTML learns nothing — the failure the field log revealed.
+     */
+    @Volatile
+    var servesSinglePageShell: Boolean = false
+
+    /** The bundle the shell loads, and the endpoints it quotes. */
+    @Volatile
+    var appBundlePath: String = "js/app.js"
+
+    @Volatile
+    var vendorBundlePath: String = "js/chunk-vendors.js"
+
+    @Volatile
+    var appBundleBody: String =
+        """var api={base:"/cgi-bin/goform/goform_set_cmd_process",read:"/cgi-bin/goform/goform_get_cmd_process"};"""
+
+    /**
+     * The bundle firmware 1.12.8 serves: it names only its JSON-RPC dispatcher.
+     *
+     * Reproduced exactly from the field log. The bundle names `/cgi-bin/http.cgi` and no
+     * `*_set_cmd_process` path at all, which is why the login went to `http.cgi` while the read
+     * fell back to the configured `/goform/goform_get_cmd_process` and 404'd. A bundle that
+     * happened to contain a goform path would sort that one first and hide the bug, so this one
+     * deliberately does not.
+     */
+    @Volatile
+    var appBundleNamesForeignEndpointFirst: Boolean = false
+
+    /**
+     * A bundle that mentions `base64` for unrelated reasons, as the real one does.
+     *
+     * The real page has `<script>…base64…</script>` and the real bundle runs a `Base64` polyfill, so
+     * a client that inferred the password encoding from the text saw `base64` twice and flipped the
+     * firmware's base64 login to plain text — which the device answers with its wrong-password code.
+     */
+    @Volatile
+    var appBundleMentionsBase64Unrelatedly: Boolean = false
+
+    /** The framework bundle, deliberately huge and free of endpoints, as the real one is. */
+    @Volatile
+    var vendorBundleBody: String = "/* vue */ var framework='" + "x".repeat(200_000) + "';"
+
+    /**
+     * The login page this server serves at `/`.
+     *
+     * A device has to publish the endpoint its form posts to, or the page could not log anyone in,
+     * so this is the one source that cannot be a guess about the firmware.
+     */
+    /** The bundle actually served, honouring [appBundleNamesForeignEndpointFirst]. */
+    private fun servedAppBundle(): String =
+        if (!appBundleNamesForeignEndpointFirst) {
+            appBundleBody
+        } else {
+            """var api={login:"/cgi-bin/http.cgi",data:"/cgi-bin/http.cgi"};"""
+        }
+
+    private fun loginPageHtml(): String =
+        if (!servesSinglePageShell) {
+            """
+            <!DOCTYPE html>
+            <html><head><title>ZLT Login</title></head>
+            <body>
+              <form id="loginForm" action="$loginPath" method="post">
+                <input name="$pageUserField" type="text"/>
+                <input name="$pagePasswordField" type="password"/>
+              </form>
+              <script>var enc = base64($pagePasswordField);</script>
+            </body></html>
+            """.trimIndent()
+        } else {
+            """
+            <!DOCTYPE html><html lang=""><head><meta charset="utf-8"><title></title>
+            <link href="css/app.css" rel="preload" as="style">
+            <link href="js/app.js" rel="preload" as="script">
+            <link href="js/chunk-vendors.js" rel="preload" as="script">
+            </head><body><div id="app"><div id="first-loading-body"></div></div>
+            <script src="$vendorBundlePath"></script>
+            <script src="$appBundlePath"></script></body></html>
+            """.trimIndent() +
+                // The real shell ends with a script containing `base64`, which is what a page-based
+                // encoding guess would latch onto.
+                if (appBundleMentionsBase64Unrelatedly) {
+                    "<script>var polyfill=Base64;</script>"
+                } else {
+                    ""
+                }
+        }
+
+    /** The exact page this server serves, so a test can check the parse against the real bytes. */
+    fun pageHtml(): String = loginPageHtml()
 
     @Volatile
     private var running = true
@@ -91,12 +258,43 @@ class FakeGoformServer(
 
             val query = target.substringAfter('?', "")
             val path = target.substringBefore('?')
-            val response = when {
-                path.endsWith("/goform/goform_set_cmd_process") -> handleSet(body)
-                path.endsWith("/goform/goform_get_cmd_process") -> handleGet(query, headers)
-                else -> Response(200, "<html><body>login</body></html>")
+            if (goformReturns404 && path.contains("/goform/")) {
+                write(socket, Response(404, "<html><body>404 Not Found</body></html>"))
+                return
             }
-            write(socket, response)
+            if (servesForeignHttpCgi && path.contains("http.cgi")) {
+                foreignLoginAttempts.incrementAndGet()
+                // The verbatim reply from the field log: no `result` key anywhere.
+                write(
+                    socket,
+                    Response(200, """{"success":false,"cmd":-1,"message":"ROOT IS NULL."}"""),
+                )
+                return
+            }
+            if (servesForeignHttpCgi && path.contains("/goform/")) {
+                write(socket, Response(404, "<html><body>404 Not Found</body></html>"))
+                return
+            }
+            val response = when {
+                path.endsWith(loginPath) && path.contains("set_cmd_process") -> handleSet(body)
+                path.endsWith(readPath) && path.contains("get_cmd_process") -> handleGet(query, headers)
+                // The page a real device serves, naming the endpoint it posts a login to. Only the
+                // configured path is named when the test moves the endpoint, so a client that
+                // cannot read the page keeps asking the wrong place and fails.
+                path == "/" -> { pageRequests.incrementAndGet(); Response(200, loginPageHtml()) }
+                // Scripts are served by exact path, so a client that asked for the wrong one, or
+                // never asked, cannot accidentally succeed.
+                path == "/$vendorBundlePath" -> {
+                    bundleRequests.incrementAndGet()
+                    Response(200, vendorBundleBody, listOf("Content-Type" to "application/javascript"))
+                }
+                path == "/$appBundlePath" -> {
+                    bundleRequests.incrementAndGet()
+                    Response(200, servedAppBundle(), listOf("Content-Type" to "application/javascript"))
+                }
+                else -> Response(404, "<html><body>404 Not Found</body></html>")
+            }
+            write(socket, response, if (echoRequestLineAsStatus) target else null)
         }
     }
 
@@ -106,13 +304,21 @@ class FakeGoformServer(
         return when (form["goformId"]) {
             "LOGIN" -> {
                 loginAttempts.incrementAndGet()
-                // The firmware wants the password Base64-encoded in this field; a clear-text
-                // password is rejected exactly like a wrong one, so decoding it here is what makes
-                // the test able to tell "wrong password" from "wrong encoding".
+                // The firmware wants the password Base64-encoded in this field, and it does not fall back:
+                // a clear-text password is rejected exactly like a wrong one. Decoding strictly is
+                // what makes the test able to tell "wrong password" from "wrong encoding" — an
+                // earlier version fell back to the raw value, which accepted plain text and hid a
+                // real encoding bug behind a green test.
                 val presented = form["password"].orEmpty()
-                val decoded = runCatching {
-                    String(java.util.Base64.getDecoder().decode(presented), Charsets.UTF_8)
-                }.getOrDefault(presented)
+                val decoded = if (acceptsPlainPassword) {
+                    runCatching {
+                        String(java.util.Base64.getDecoder().decode(presented), Charsets.UTF_8)
+                    }.getOrDefault(presented)
+                } else {
+                    runCatching {
+                        String(java.util.Base64.getDecoder().decode(presented), Charsets.UTF_8)
+                    }.getOrNull()
+                }
                 if (form["user"] == "admin" && decoded == password) {
                     // A real Set-Cookie header carries attributes, which is exactly what the old
                     // client forwarded verbatim as a request Cookie header.
@@ -134,6 +340,10 @@ class FakeGoformServer(
         val cmd = query.parseForm()["cmd"].orEmpty()
         lastCmd.add(cmd)
 
+        if (sessionCheckReturns404 && cmd == "loginfo") {
+            return Response(404, "<html><body>404 Not Found</body></html>")
+        }
+
         val cookie = headers["cookie"].orEmpty()
         if (sessionAlwaysInvalid) return Response(200, """{"loginfo":"not_login"}""")
         if (!cookie.contains("sessionid=$SESSION_ID")) {
@@ -152,9 +362,25 @@ class FakeGoformServer(
         return Response(200, json.toString())
     }
 
-    private fun write(socket: Socket, response: Response) {
+    /**
+     * [echoStatusInsteadOf] writes the request line verbatim where the status line belongs, which
+     * is the malformed reply the device produced. It is passed explicitly per response rather than
+     * read from the flag so the behaviour is visible at each call site.
+     */
+    private fun write(socket: Socket, response: Response, echoStatusInsteadOf: String? = null) {
         val writer = OutputStreamWriter(socket.getOutputStream(), Charsets.ISO_8859_1)
         val payload = response.body.toByteArray(Charsets.UTF_8)
+        if (echoStatusInsteadOf != null) {
+            // "/goform/goform_set_cmd_process HTTP/1.1 301 Moved Permanently", exactly as seen.
+            writer.write(echoStatusInsteadOf + " HTTP/1.1 301 Moved Permanently\r\n")
+            redirectTarget?.let { writer.write("Location: $it\r\n") }
+            writer.write("Content-Length: ${payload.size}\r\n")
+            writer.write("Connection: close\r\n\r\n")
+            writer.flush()
+            socket.getOutputStream().write(payload)
+            socket.getOutputStream().flush()
+            return
+        }
         writer.write("HTTP/1.1 ${response.status} OK\r\n")
         writer.write("Content-Type: application/json\r\n")
         writer.write("Content-Length: ${payload.size}\r\n")

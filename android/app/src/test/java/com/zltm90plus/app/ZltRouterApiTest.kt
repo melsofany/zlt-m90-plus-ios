@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -95,16 +96,248 @@ class ZltRouterApiTest {
 
     @Test
     fun `a config that asks for a plain password is honoured`() = runTest {
-        val plainConfig = configWith(loginPasswordEncoding = "plain")
-        val api = ZltRouterApi(plainConfig, session, hostProvider = { "${server.host}:${server.port}" })
-        api.login("admin", "admin")
-        assertEquals("admin", server.lastSetBody.single().parseFormValue("password"))
+        // A fake of its own that accepts clear text, since the shared one is deliberately strict:
+        // against the strict fake this test would only prove that a plain password is refused.
+        val plainServer = FakeGoformServer(acceptsPlainPassword = true).start()
+        try {
+            val plainConfig = configWith(loginPasswordEncoding = "plain")
+            val api = ZltRouterApi(
+                plainConfig,
+                session,
+                hostProvider = { "${plainServer.host}:${plainServer.port}" },
+            )
+            api.login("admin", "admin")
+            assertEquals("admin", plainServer.lastSetBody.single().parseFormValue("password"))
+        } finally {
+            plainServer.stop()
+        }
     }
 
     @Test
     fun `wrong password maps to invalid credentials, not to a network error`() = runTest {
         val error = runCatching { api().login("admin", "nope") }.exceptionOrNull()
         assertTrue("expected InvalidCredentials but was $error", error is RouterError.InvalidCredentials)
+    }
+
+    /**
+     * The field failure this fix exists for.
+     *
+     * The log showed `ProtocolException: Unexpected status line:
+     * /goform/goform_set_cmd_process HTTP/1.1 301 Moved Permanently` reported as
+     * "حدث خطأ مؤقت. يمكنك إعادة المحاولة." — advice that cannot work, because the same request
+     * provokes the same answer. The device did reply, so this must be named as an unreadable reply
+     * rather than as a transient fault.
+     */
+    @Test
+    fun `a status line that echoes the request is reported as an unreadable reply`() = runTest {
+        server.echoRequestLineAsStatus = true
+
+        val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
+
+        assertTrue(
+            "a device that answered must not be reported as a temporary failure, got: $error",
+            error is RouterError.DeviceResponseUnreadable,
+        )
+        assertTrue(
+            "the reason must be carried for the log, got: ${(error as RouterError?)?.technicalDetail}",
+            (error as RouterError?)?.technicalDetail?.contains("Unexpected status line") == true,
+        )
+    }
+
+    /**
+     * The second field log, replayed.
+     *
+     * The device answered every attempt with a status line that repeated the request line, and hid
+     * a redirect to the port it actually serves on underneath. The parsed reply could never show
+     * that target, so the app reported "unreadable reply" four times and never followed it.
+     */
+    @Test
+    fun `a redirect hidden under a malformed status line is followed to where it points`() = runTest {
+        // The address the device refuses, which points at the port that actually serves it.
+        val redirecting = FakeGoformServer().start()
+        val serving = FakeGoformServer().start()
+        server = serving
+        try {
+            redirecting.echoRequestLineAsStatus = true
+            redirecting.redirectTarget = "http://127.0.0.1:${serving.port}/"
+            val api = ZltRouterApi(
+                config = RouterRoutesConfig.parse(routesJson),
+                sessionStore = session,
+                hostProvider = { "${redirecting.host}:${redirecting.port}" },
+            )
+
+            val error = runCatching { api.login("admin", "admin") }.exceptionOrNull()
+
+            assertNull("the redirect must be followed, not reported as a failure: $error", error)
+            assertEquals(
+                "the login must land on the address the device named",
+                1,
+                serving.loginAttempts.get(),
+            )
+        } finally {
+            redirecting.stop()
+        }
+    }
+
+    /**
+     * The third field log, replayed.
+     *
+     * Firmware 1.12.8 answered the configured goform path with 404 over https, and its own login
+     * page named a different endpoint. The app cannot guess a firmware's paths, so it reads the one
+     * the device publishes and uses it — including for the reads that follow.
+     */
+    @Test
+    fun `a path the device rejects is replaced by the one its login page names`() = runTest {
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+        val api = api()
+
+        // The configured path is /goform/...; the device serves only its own, so this can only
+        // succeed by reading the page.
+        val error = runCatching { api.login("admin", "admin") }.exceptionOrNull()
+        assertNull("the login must use the endpoint the device named, got: $error", error)
+        assertEquals(
+            "the endpoint must be learned from the device's own page",
+            1,
+            server.pageRequests.get(),
+        )
+
+        // A read must follow the learned path too, or login would succeed and everything after it
+        // would 404 — the failure mode this whole change exists to avoid.
+        val readError = runCatching { api.fetchBatteryStatus() }.exceptionOrNull()
+        assertNull("reads must use the learned path as well, got: $readError", readError)
+    }
+
+    @Test
+    fun `the endpoint is taken from the page even with no redirect at all`() = runTest {
+        // No redirect, no malformed status line: only a 404 on the configured path. The page is
+        // still the answer, because the path was a guess either way.
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+
+        val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
+
+        assertNull("a 404 alone must be enough to trigger the page read, got: $error", error)
+    }
+    /**
+     * The fourth field log, replayed.
+     *
+     * The page the device serves is a Vue shell: a `<div id="app">` and two `<script src>` tags, no
+     * form and no endpoint in the HTML at all. The previous build read that page, found nothing, and
+     * kept the configured path — which is why it still answered 404. The endpoint exists only inside
+     * the bundle the shell loads, so the shell has to be followed to its code.
+     */
+    @Test
+    fun `a single page shell is followed to the bundle that holds its endpoints`() = runTest {
+        server.servesSinglePageShell = true
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+        val api = api()
+
+        val error = runCatching { api.login("admin", "admin") }.exceptionOrNull()
+        assertNull("the endpoint must be found in the bundle, got: $error", error)
+        assertTrue("the shell must be fetched", server.pageRequests.get() >= 1)
+        assertTrue("the bundle must be fetched", server.bundleRequests.get() >= 1)
+
+        val readError = runCatching { api.fetchBatteryStatus() }.exceptionOrNull()
+        assertNull("reads must use the discovered path too, got: $readError", readError)
+    }
+
+    /** The device's own code is tried before the megabytes of framework it ships with. */
+    @Test
+    fun `the devices own bundle is read before the framework bundle`() = runTest {
+        server.servesSinglePageShell = true
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+
+        runCatching { api().login("admin", "admin") }
+
+        assertEquals(
+            "only the device's own bundle is worth reading, and it is read once",
+            1,
+            server.bundleRequests.get(),
+        )
+    }
+
+    /**
+     * Nothing is invented when the bundle quotes no endpoint.
+     *
+     * The fake must be made to serve a matching path, or this would pass for the wrong reason: the
+     * configured path would answer and login would succeed without any discovery at all.
+     */
+    @Test
+    fun `a bundle with no endpoint yields no path and login still fails cleanly`() = runTest {
+        server.servesSinglePageShell = true
+        server.appBundleBody = """var nothing={};"""
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+
+        val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
+
+        assertNotNull("login must fail rather than succeed against a guessed path", error)
+    }
+    /**
+     * The user's diagnosis, reproduced: a correct password must not read as wrong.
+     *
+     * The real page and its bundle both mention `base64` for unrelated reasons (a polyfill, a
+     * helper). A previous build inferred the password encoding from that text and flipped this
+     * firmware's base64 login to plain text — which the device answers with its wrong-password
+     * code, so a correct password was reported as wrong. The fake decodes the field, so it can tell
+     * "wrong password" from "wrong encoding", and this test fails if the encoding is inferred again.
+     */
+    @Test
+    fun `a correct password is not rejected when the page mentions base64`() = runTest {
+        server.servesSinglePageShell = true
+        server.appBundleMentionsBase64Unrelatedly = true
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+
+        val error = runCatching { api().login("admin", server.password) }.exceptionOrNull()
+
+        assertEquals("the password is correct and must be accepted", null, error)
+    }
+
+    /** The same, with the password taken from the page rather than the bundle. */
+    @Test
+    fun `a correct password is accepted when the page names the endpoint`() = runTest {
+        server.servesSinglePageShell = false
+        server.loginPath = "/cgi-bin/goform/goform_set_cmd_process"
+        server.readPath = "/cgi-bin/goform/goform_get_cmd_process"
+
+        val error = runCatching { api().login("admin", server.password) }.exceptionOrNull()
+
+        assertEquals("the password is correct and must be accepted", null, error)
+    }
+
+    @Test
+    fun `login falls back to http when the preferred https scheme has no interface`() = runTest {
+        // The fake answers the API over http; asking it to serve https is what the 404 stands in
+        // for, so a client that must start on https is pointed at a scheme that cannot work.
+        val httpsOnly = ZltRouterApi(
+            config = RouterRoutesConfig.parse(routesJson),
+            sessionStore = session,
+            hostProvider = { "${server.host}:${server.port}" },
+            schemeProvider = { "https" },
+        )
+
+        val error = runCatching { httpsOnly.login("admin", "admin") }.exceptionOrNull()
+
+        assertNull(
+            "the client must try http after https fails, not report a failure: $error",
+            error,
+        )
+        assertEquals("the login must have reached the device", 1, server.loginAttempts.get())
+    }
+
+    @Test
+    fun `the scheme that logged in is the one used for later reads`() = runTest {
+        val api = api()
+        api.login("admin", "admin")
+        api.fetchBatteryStatus()
+
+        // The fake only speaks http, so a read that succeeded proves the resolved scheme was
+        // carried past login rather than recomputed from the caller's preference.
+        assertEquals(0, server.queriesWithoutSession.get())
     }
 
     @Test
@@ -262,6 +495,93 @@ class ZltRouterApiTest {
         val error = caught as? RouterError
         val text = listOfNotNull(error?.userMessage, error?.technicalDetail).joinToString(" ")
         assertTrue("credential leaked into error text: $text", !text.contains("super-secret-password"))
+    }
+
+    // --- the third field log, replayed ----------------------------------------------------
+
+    /**
+     * The device named `/cgi-bin/http.cgi`, and a goform login must not be sent there.
+     *
+     * That endpoint is a JSON-RPC dispatcher with no `goformId` concept. Posting a goform login to
+     * it produced `{"success":false,"cmd":-1,"message":"ROOT IS NULL."}`, so the password was never
+     * examined — yet the app told the user the password was wrong.
+     */
+    @Test
+    fun `a goform login is never posted to an endpoint from another interface family`() = runTest {
+        server.servesSinglePageShell = true
+        server.appBundleNamesForeignEndpointFirst = true
+        server.servesForeignHttpCgi = true
+        server.goformReturns404 = true
+
+        runCatching { api().login("admin", "admin") }
+
+        assertEquals(
+            "no login may be sent to an endpoint in a protocol this build does not speak",
+            0,
+            server.foreignLoginAttempts.get(),
+        )
+    }
+
+    /**
+     * A reply in that other protocol must not be reported as a wrong password.
+     *
+     * The reply carries no `result` key, so there is nothing in it that could judge credentials.
+     */
+    @Test
+    fun `a foreign reply is reported as an unsupported interface, not as a wrong password`() = runTest {
+        server.servesSinglePageShell = true
+        server.appBundleNamesForeignEndpointFirst = true
+        server.servesForeignHttpCgi = true
+        server.goformReturns404 = true
+
+        val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
+
+        assertTrue(
+            "the device never judged the password, so this must not be InvalidCredentials, got: $error",
+            error !is RouterError.InvalidCredentials,
+        )
+        assertTrue(
+            "the interface that is not supported must be named, got: $error",
+            error is RouterError.InterfaceNotSupported,
+        )
+        val detail = (error as? RouterError)?.technicalDetail
+        assertTrue(
+            "the endpoint must appear in the log, got: $detail",
+            detail?.contains("http.cgi") == true,
+        )
+    }
+
+    /**
+     * A session check that could not run is not a rejection.
+     *
+     * The field log's login was accepted, then `loginfo` 404'd — and that alone produced "اسم
+     * المستخدم أو كلمة المرور غير صحيحة". A check the firmware does not serve says nothing about
+     * credentials, so it must not be the thing that accuses them.
+     */
+    @Test
+    fun `a 404 on the session check does not turn an accepted login into a wrong password`() = runTest {
+        server.sessionCheckReturns404 = true
+
+        val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
+
+        assertTrue(
+            "an unanswerable session check must not accuse the password, got: $error",
+            error !is RouterError.InvalidCredentials,
+        )
+        assertEquals("the login itself must still be attempted once", 1, server.loginAttempts.get())
+    }
+
+    /** The other direction: a firmware that really does reject the session still says so. */
+    @Test
+    fun `a session the firmware refuses is still reported as wrong credentials`() = runTest {
+        server.sessionAlwaysInvalid = true
+
+        val error = runCatching { api().login("admin", "admin") }.exceptionOrNull()
+
+        assertTrue(
+            "a firmware that answers `not logged in` is a real rejection, got: $error",
+            error is RouterError.InvalidCredentials,
+        )
     }
 
     private companion object {
