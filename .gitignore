@@ -23,3 +23,13 @@ android/captures/
 *.aab
 *.keystore
 *.jks
+
+# Download server output: request log only. The APK itself is gitignored above.
+download/server.log
+
+# Python bytecode from the download server scripts
+__pycache__/
+*.pyc
+
+# Captured device traffic (contains live session tokens) — never commit
+*.har

@@ -65,8 +65,9 @@ object LocalNetworkChecker {
     /**
      * Reads the phone's default gateway, which on the device's own Wi-Fi is the device's admin
      * address. Android knows this address, so the app does not have to guess a factory default
-     * (the M90 Plus ships on 192.168.0.1, 192.168.1.1, 192.168.70.1 or 192.168.100.1 depending on
-     * the carrier build, and any of those guesses is wrong on the other builds).
+     * (the M90 Plus ships on 192.168.8.1, 192.168.0.1, 192.168.1.1, 192.168.70.1 or
+     * 192.168.100.1 depending on the carrier build, and any of those guesses is wrong on the
+     * other builds).
      */
     fun currentGatewayIpv4(context: Context): String? {
         val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager

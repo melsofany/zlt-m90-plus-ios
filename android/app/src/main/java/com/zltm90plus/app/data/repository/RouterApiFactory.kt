@@ -30,6 +30,7 @@ class RouterApiFactory(
 
     data class Selection(
         val host: String,
+        val scheme: String,
         val demoScenario: MockRouterApi.Scenario?,
     )
 
@@ -47,13 +48,17 @@ class RouterApiFactory(
         val api: com.zltm90plus.app.data.remote.RouterApiProtocol,
     )
 
-    fun configure(host: String, demoScenario: MockRouterApi.Scenario? = null) {
-        val next = Selection(host.trim().ifBlank { DEFAULT_ROUTER_HOST }, demoScenario)
+    fun configure(host: String, scheme: String = "http", demoScenario: MockRouterApi.Scenario? = null) {
+        val next = Selection(
+            host = host.trim().ifBlank { DEFAULT_ROUTER_HOST },
+            scheme = if (scheme.equals("https", ignoreCase = true)) "https" else "http",
+            demoScenario = demoScenario,
+        )
         if (selection.getAndSet(next) != next) active.set(null)
     }
 
     fun create(): com.zltm90plus.app.data.remote.RouterApiProtocol {
-        val current = selection.get() ?: Selection(DEFAULT_ROUTER_HOST, null)
+        val current = selection.get() ?: Selection(DEFAULT_ROUTER_HOST, "http", null)
         active.get()?.takeIf { it.selection == current }?.let { return it.api }
 
         val config = loadRoutesConfig()
@@ -64,6 +69,7 @@ class RouterApiFactory(
                 config = config,
                 sessionStore = sessionStore,
                 hostProvider = { current.host },
+                schemeProvider = { current.scheme },
             )
         }
         active.set(CacheEntry(current, config, api))

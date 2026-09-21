@@ -60,6 +60,34 @@
       }
     }
   },
+  "httpCgi": {
+    "_comment": "واجهة json http.cgi للأصدار 1.12.8. الأرقام هنا مأخوذة من حركة المرور المسجلة فعلًا من الجهاز (docs/http-cgi-protocol.md) ولم تُخمَّن.",
+    "_verifiedAgainst": "ZLT M90 PLUS firmware 1.12.8",
+    "path": "/cgi-bin/http.cgi",
+    "tokenCmd": 232,
+    "deviceConfigCmd": 1008,
+    "loginCmd": 100,
+    "statusCmd": 1005,
+    "radioCmd": 1002,
+    "hardwareCmd": 1001,
+    "trafficCmd": 337,
+    "clientsCmd": 224,
+    "uptimeCmd": 104,
+    "loginUserField": "username",
+    "loginPasswordField": "passwd",
+    "tokenField": "token",
+    "sessionField": "sessionId",
+    "passwordDigest": "sha256",
+    "emptySessionBeforeLogin": true,
+    "commands": {
+      "deviceInfo": 1001,
+      "battery": 1005,
+      "network": 1002,
+      "dataUsage": 337,
+      "connectedDevices": 224,
+      "uptime": 104
+    }
+  },
   "routes": {
     "_comment": "مسارات LuCI القديمة، تُستخدم فقط إن لم يستجب goform.",
     "login": {
@@ -117,6 +145,8 @@
   },
   "fields": {
     "batteryCharging": [
+      "power_charger_status",
+      "battery_charge_status",
       "battery_charging",
       "charging",
       "is_charging",
@@ -130,6 +160,7 @@
     ],
     "batteryPercent": [
       "battery_value",
+      "battery_capacity",
       "battery_vol_percent",
       "battery_percent",
       "batteryLevel",
@@ -148,7 +179,8 @@
     "batteryTemperature": [
       "temperature",
       "battery_temperature",
-      "temp"
+      "temp",
+      "device_temperature"
     ],
     "batteryVoltage": [
       "voltage",
@@ -183,7 +215,8 @@
       "host_name",
       "device_name",
       "alias",
-      "name"
+      "name",
+      "user"
     ],
     "deviceIp": [
       "ip",
@@ -199,7 +232,10 @@
       "clients",
       "client_list",
       "hosts",
-      "stations"
+      "stations",
+      "wlan24g_wifi_info",
+      "wlan5g_wifi_info",
+      "wlan_wifi_info"
     ],
     "deviceMac": [
       "mac",
@@ -212,7 +248,9 @@
       "model",
       "device_model",
       "product",
-      "board"
+      "board",
+      "board_type",
+      "real_device"
     ],
     "deviceType": [
       "type",
@@ -227,16 +265,20 @@
       "firmware_version",
       "version",
       "fwver",
-      "rom_version"
+      "rom_version",
+      "fake_version"
     ],
     "hardwareVersion": [
       "hardware_version",
       "hardware",
-      "hwver"
+      "hwver",
+      "hwversion"
     ],
     "imei": [
       "imei",
-      "imei_number"
+      "imei_number",
+      "module_imei",
+      "device_cmei"
     ],
     "internetConnected": [
       "wan_connect_status",
@@ -259,7 +301,8 @@
       "net_type",
       "rat",
       "access_technology",
-      "wan_type"
+      "wan_type",
+      "network_type_str"
     ],
     "planRenewal": [
       "renewal_date",
@@ -294,20 +337,22 @@
     "serialNumber": [
       "sn",
       "serial",
-      "serial_number"
+      "serial_number",
+      "device_sn"
     ],
     "signalDbm": [
       "lte_rsrp",
       "Z5g_rsrp",
-      "rssi",
       "rsrp",
+      "RSRP",
       "dbm",
       "signal_dbm"
     ],
     "signalLevel": [
       "signal_level",
       "level",
-      "bars"
+      "bars",
+      "signal_lvl"
     ],
     "signalPercent": [
       "network_signalbar",
@@ -330,7 +375,8 @@
       "uptime_seconds",
       "conn_time_sec",
       "sys_uptime_seconds",
-      "runtime"
+      "runtime",
+      "uptime"
     ],
     "wanIp": [
       "wan_ipaddr",
@@ -342,7 +388,9 @@
     "wifiSsid": [
       "ssid",
       "wifi_ssid",
-      "wl_ssid"
+      "wl_ssid",
+      "ssid2G",
+      "ssid5G"
     ]
   },
   "genericAliases": {
